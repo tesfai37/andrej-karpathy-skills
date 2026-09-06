@@ -1,0 +1,83 @@
+{
+  "_comment": "Seed data only. Once the bot has started, edit everything from Discord with /trial and /achievement - never by hand here.",
+  "trials": [
+    {"key": "vas",  "name": "Asylum Sanctorium", "short": "vAS",  "emoji": "🔱", "sort": 10},
+    {"key": "vcr",  "name": "Cloudrest",         "short": "vCR",  "emoji": "🦅", "sort": 20},
+    {"key": "vhof", "name": "Halls of Fabrication", "short": "vHoF", "emoji": "⚙️", "sort": 30},
+    {"key": "vmol", "name": "Maw of Lorkhaj",    "short": "vMoL", "emoji": "🌑", "sort": 40},
+    {"key": "vss",  "name": "Sunspire",          "short": "vSS",  "emoji": "🐉", "sort": 50},
+    {"key": "vka",  "name": "Kyne's Aegis",      "short": "vKA",  "emoji": "⚡", "sort": 60},
+    {"key": "vbrp", "name": "Blackrose Prison",  "short": "vBRP", "emoji": "⛓️", "sort": 70, "scored": 0},
+    {"key": "vrg",  "name": "Rockgrove",         "short": "vRG",  "emoji": "🌋", "sort": 80},
+    {"key": "vdsr", "name": "Dreadsail Reef",    "short": "vDSR", "emoji": "⚓", "sort": 90},
+    {"key": "vse",  "name": "Sanity's Edge",     "short": "vSE",  "emoji": "🌀", "sort": 100},
+    {"key": "vlc",  "name": "Lucent Citadel",    "short": "vLC",  "emoji": "✨", "sort": 110},
+    {"key": "account", "name": "Account Wide",   "short": "AWA",  "emoji": "🏆", "sort": 900, "scored": 0}
+  ],
+  "achievements": [
+    {"key": "vas",   "trial": "vas", "name": "Veteran Asylum Sanctorium", "kind": "clear", "sort": 1},
+    {"key": "vas1",  "trial": "vas", "name": "Asylum +1", "kind": "hm", "sort": 2, "requires": "vas"},
+    {"key": "vas2",  "trial": "vas", "name": "Asylum +2", "kind": "hm", "sort": 3, "requires": "vas1"},
+    {"key": "vasir", "trial": "vas", "name": "Immortal Redeemer", "kind": "title", "sort": 4, "requires": "vas2"},
+
+    {"key": "vcr",   "trial": "vcr", "name": "Veteran Cloudrest", "kind": "clear", "sort": 1},
+    {"key": "vcr1",  "trial": "vcr", "name": "Cloudrest +1", "kind": "hm", "sort": 2, "requires": "vcr"},
+    {"key": "vcr2",  "trial": "vcr", "name": "Cloudrest +2", "kind": "hm", "sort": 3, "requires": "vcr1"},
+    {"key": "vcr3",  "trial": "vcr", "name": "Cloudrest +3", "kind": "hm", "sort": 4, "requires": "vcr2"},
+    {"key": "vcrgh", "trial": "vcr", "name": "Gryphon Heart", "kind": "title", "sort": 5, "requires": "vcr3"},
+
+    {"key": "vhof",    "trial": "vhof", "name": "Veteran Halls of Fabrication", "kind": "clear", "sort": 1},
+    {"key": "vhofhm",  "trial": "vhof", "name": "Halls of Fabrication HM", "kind": "hm", "sort": 2, "requires": "vhof"},
+    {"key": "vhofttt", "trial": "vhof", "name": "Tick-Tock Tormentor", "kind": "title", "sort": 3, "requires": "vhofhm"},
+
+    {"key": "vmol",   "trial": "vmol", "name": "Veteran Maw of Lorkhaj", "kind": "clear", "sort": 1},
+    {"key": "vmolhm", "trial": "vmol", "name": "Maw of Lorkhaj HM", "kind": "hm", "sort": 2, "requires": "vmol"},
+    {"key": "vmoldd", "trial": "vmol", "name": "Dro-m'Athra Destroyer", "kind": "title", "sort": 3, "requires": "vmolhm"},
+
+    {"key": "vss",          "trial": "vss", "name": "Veteran Sunspire", "kind": "clear", "sort": 1},
+    {"key": "vssice",       "trial": "vss", "name": "Lokkestiiz HM", "kind": "boss", "sort": 2, "requires": "vss"},
+    {"key": "vssfire",      "trial": "vss", "name": "Yolnahkriin HM", "kind": "boss", "sort": 3, "requires": "vss"},
+    {"key": "vssnavi",      "trial": "vss", "name": "Nahviintaas HM", "kind": "boss", "sort": 4, "requires": "vss"},
+    {"key": "vsshm",        "trial": "vss", "name": "Sunspire HM", "kind": "hm", "sort": 5, "requires": "vssice vssfire vssnavi"},
+    {"key": "vssgodslayer", "trial": "vss", "name": "Godslayer", "kind": "title", "sort": 6, "requires": "vsshm"},
+
+    {"key": "vka",            "trial": "vka", "name": "Veteran Kyne's Aegis", "kind": "clear", "sort": 1},
+    {"key": "vkayan",         "trial": "vka", "name": "Yandir HM", "kind": "boss", "sort": 2, "requires": "vka"},
+    {"key": "vkavrol",        "trial": "vka", "name": "Vrol HM", "kind": "boss", "sort": 3, "requires": "vka"},
+    {"key": "vkafal",         "trial": "vka", "name": "Falgravn HM", "kind": "boss", "sort": 4, "requires": "vka"},
+    {"key": "vkahm",          "trial": "vka", "name": "Kyne's Aegis HM", "kind": "hm", "sort": 5, "requires": "vkayan vkavrol vkafal"},
+    {"key": "vkakyneswrath",  "trial": "vka", "name": "Kyne's Wrath", "kind": "title", "sort": 6, "requires": "vkahm"},
+
+    {"key": "vbrp",      "trial": "vbrp", "name": "Veteran Blackrose Prison", "kind": "clear", "sort": 1},
+    {"key": "unchained", "trial": "vbrp", "name": "Unchained", "kind": "title", "sort": 2, "requires": "vbrp"},
+
+    {"key": "vrg",           "trial": "vrg", "name": "Veteran Rockgrove", "kind": "clear", "sort": 1},
+    {"key": "vrgoax",        "trial": "vrg", "name": "Oaxiltso HM", "kind": "boss", "sort": 2, "requires": "vrg"},
+    {"key": "vrgbah",        "trial": "vrg", "name": "Bahsei HM", "kind": "boss", "sort": 3, "requires": "vrg"},
+    {"key": "vrgxal",        "trial": "vrg", "name": "Xalvakka HM", "kind": "boss", "sort": 4, "requires": "vrg"},
+    {"key": "vrghm",         "trial": "vrg", "name": "Rockgrove HM", "kind": "hm", "sort": 5, "requires": "vrgoax vrgbah vrgxal"},
+    {"key": "planesbreaker", "trial": "vrg", "name": "Planesbreaker", "kind": "title", "sort": 6, "requires": "vrghm"},
+
+    {"key": "vdsr",         "trial": "vdsr", "name": "Veteran Dreadsail Reef", "kind": "clear", "sort": 1},
+    {"key": "vdsrlt",       "trial": "vdsr", "name": "Lylanar & Turlassil HM", "kind": "boss", "sort": 2, "requires": "vdsr"},
+    {"key": "vdsrreef",     "trial": "vdsr", "name": "Reef Guardian HM", "kind": "boss", "sort": 3, "requires": "vdsr"},
+    {"key": "vdsrtide",     "trial": "vdsr", "name": "Taleria HM", "kind": "boss", "sort": 4, "requires": "vdsr"},
+    {"key": "vdsrhm",       "trial": "vdsr", "name": "Dreadsail Reef HM", "kind": "hm", "sort": 5, "requires": "vdsrlt vdsrreef vdsrtide"},
+    {"key": "swashbuckler", "trial": "vdsr", "name": "Swashbuckler Supreme", "kind": "title", "sort": 6, "requires": "vdsrhm"},
+
+    {"key": "vse",        "trial": "vse", "name": "Veteran Sanity's Edge", "kind": "clear", "sort": 1},
+    {"key": "vseyase",    "trial": "vse", "name": "Yaseh HM", "kind": "boss", "sort": 2, "requires": "vse"},
+    {"key": "vsetwelv",   "trial": "vse", "name": "Twelvane HM", "kind": "boss", "sort": 3, "requires": "vse"},
+    {"key": "vseansuul",  "trial": "vse", "name": "Ansuul HM", "kind": "boss", "sort": 4, "requires": "vse"},
+    {"key": "vsehm",      "trial": "vse", "name": "Sanity's Edge HM", "kind": "hm", "sort": 5, "requires": "vseyase vsetwelv vseansuul"},
+    {"key": "mindmender", "trial": "vse", "name": "Mindmender", "kind": "title", "sort": 6, "requires": "vsehm"},
+
+    {"key": "vlc",         "trial": "vlc", "name": "Veteran Lucent Citadel", "kind": "clear", "sort": 1},
+    {"key": "vlcryezil",   "trial": "vlc", "name": "Ry'zil HM", "kind": "boss", "sort": 2, "requires": "vlc"},
+    {"key": "vlcshard",    "trial": "vlc", "name": "Orphic Shattered Shard HM", "kind": "boss", "sort": 3, "requires": "vlc"},
+    {"key": "vlcarcane",   "trial": "vlc", "name": "Xoryn HM", "kind": "boss", "sort": 4, "requires": "vlc"},
+    {"key": "unshattered", "trial": "vlc", "name": "Unshattered", "kind": "title", "sort": 5, "requires": "vlcryezil vlcshard vlcarcane"},
+
+    {"key": "unstoppable", "trial": "account", "name": "Unstoppable", "kind": "title", "sort": 1}
+  ]
+}
