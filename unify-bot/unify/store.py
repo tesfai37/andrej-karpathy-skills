@@ -151,7 +151,8 @@ async def owned(db: Database, member_id: int, role: str) -> set[str]:
 
 
 async def grant(
-    db: Database, member: Member, role: str, keys: Sequence[str], actor_id: int, actor_name: str
+    db: Database, member: Member, role: str, keys: Sequence[str], actor_id: int, actor_name: str,
+    mark: str = "X",
 ) -> list[str]:
     """Grants keys plus their prerequisites. Returns only what was actually new."""
     wanted = await expand_prerequisites(db, keys)
@@ -163,8 +164,8 @@ async def grant(
         [
             (
                 "INSERT OR IGNORE INTO member_achievements"
-                "(member_id, role, achievement_key, granted_by) VALUES(?,?,?,?)",
-                (member.id, role, k, actor_id),
+                "(member_id, role, achievement_key, mark, granted_by) VALUES(?,?,?,?,?)",
+                (member.id, role, k, mark, actor_id),
             )
             for k in added
         ]
@@ -231,7 +232,8 @@ async def progress(db: Database, member_id: int, role: str) -> list[dict[str, An
 async def trial_detail(db: Database, member_id: int, role: str, trial_key: str) -> list[dict]:
     rows = await db.all(
         """
-        SELECT a.key, a.name, a.kind, ma.granted_at IS NOT NULL AS have, ma.granted_at
+        SELECT a.key, a.name, a.kind, ma.granted_at IS NOT NULL AS have,
+               COALESCE(ma.mark, '') AS mark, ma.granted_at
         FROM achievements a
         LEFT JOIN member_achievements ma
                ON ma.achievement_key = a.key AND ma.member_id = ? AND ma.role = ?

@@ -18,6 +18,7 @@ log = logging.getLogger("unify")
 COGS = (
     "unify.cogs.profiles",
     "unify.cogs.find",
+    "unify.cogs.guides",
     "unify.cogs.leaderboards",
     "unify.cogs.mapping",
     "unify.cogs.sync",

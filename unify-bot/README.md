@@ -174,9 +174,48 @@ says so in the channel:
 python tools/migrate_legacy.py /path/to/old/database.db
 ```
 
-Reads the old `TANK` / `HEALER` / `DPS` / `AWA` / `SCORE` / `PARSE` tables, tells
-you exactly what it found, and never touches the old file. Any column it doesn't
-recognise is listed at the end so you can decide what to do with it.
+This has been run against the guild's real database — 2,736 members, 92,487
+achievements, 7,053 scores and all 60 reference entries, in about 12 seconds.
+Every `X` and `L` cell in the source was reconciled against the result.
+
+It never touches the old file, and it reports rather than guesses:
+
+- **Both markers are kept.** Cells reading `L` are stored as an `L` mark rather
+  than being thrown away — see *The `L` marker* below.
+- **Duplicate gamertags are merged** into one member each, and it says how many.
+  Where two rows disagreed about the same cell, it says that too.
+- **Cells that aren't `X`, `L` or blank** — notes like `banned` or `NA/EU` typed
+  into an achievement column — are listed and skipped, never interpreted.
+- **Unknown columns** are listed at the end.
+- **CP builds, links and setups** come across into `/guide`.
+
+Nobody is linked to a Discord account by the migration, because the old file
+stored display names (`crow.man`, `A Sly Man#9733`) rather than account ids.
+Run **`/member match`** afterwards — it looks every saved name up against your
+server and links the exact, unambiguous matches in one confirmed batch.
+
+### The `L` marker
+
+About 25,000 cells in the old sheet say `L` instead of `X`. The bot keeps them
+as a separate mark rather than guessing what they mean:
+
+- they count as "has this achievement" everywhere — profiles, `/find`, leaderboards
+- the trial breakdown shows them as 🅛 instead of ✅
+- `/find marked:` can filter on one or the other
+- `/config set key:mark_label value:…` names them, and that name appears on profiles
+
+The pattern in your data: `L` never appears on vDSR, vSE, vLC or vOC, and within
+any one member's trial it is never mixed with `X` — which looks like a recording
+convention that changed around the time Dreadsail Reef came out. **Tell me what
+it meant and I'll label it properly.** If it simply meant "cleared" under the old
+convention, everything already behaves correctly.
+
+### Numbers
+
+Scores are written two ways in the sheet — `257,498` and `245,469k` — both
+meaning about 250k. The importer treats a `k` as a multiplier only when the
+number in front of it is small enough to have been meant that way, so `112k`
+becomes 112,000 while `245,469k` stays 245,469.
 
 ### From a spreadsheet, inside Discord
 
@@ -207,6 +246,7 @@ correctly.
 | `/me` | Your own achievement card |
 | `/profile` | Look somebody up — start typing, the list narrows as you go |
 | `/find` | Who has (and hasn't) cleared what — the group-building question |
+| `/guide show` · `list` | CP builds, channel links, setups |
 | `/leaderboard` | Points, achievements, scores or parses |
 | `/stats` | How the guild is doing overall |
 | `/score` · `/parse` | Somebody's numbers |
@@ -225,6 +265,7 @@ menus underneath switch role or open a single trial for the boss-by-boss list.
 | `/achievement give` · `take` | Grant or remove — prerequisites handled |
 | `/record score` · `/record parse` | Numbers |
 | `/trial add` · `/achievement new` · `/achievement rename` | New content, no code |
+| `/guide save` · `delete` | Edit CP builds, link lists and setups |
 | `/import` · `/export` | Spreadsheets in and out |
 | `/audit` | Every change, who made it, when |
 | `/undo` | Reverse the last change (or `/undo 42` for a specific one) |
@@ -293,7 +334,7 @@ Each achievement can require others. Grant the top one and everything below it
 comes along:
 
 ```
-vssgodslayer  →  vsshm  →  vssice + vssfire + vssnavi  →  vss
+godslayer  →  extinguisher  →  vssice + vssfire + vssnavi  →  vss
 ```
 
 Removing works the other way: take away `vss` and everything that depended on it
@@ -313,6 +354,24 @@ full HM `5`, title `10`.
 
 ---
 
+## Guild reference — `/guide`
+
+The CP builds, channel directories and setups the old bot served with `!cp`,
+`!link`, `!setup`, `!craft` and `!farming` all live here, and officers edit them
+in Discord instead of writing SQL.
+
+```
+/guide show   topic: cp · 2100dps      ← one search box across every category
+/guide list                            ← everything, grouped
+/guide save   category: cp  topic: magcro    ← opens a text box for the build
+/guide delete topic: cp · magcro
+```
+
+`/guide save` opens a proper multi-line text box, so a full CP build pastes in
+as-is. Your 60 existing entries come across with the migration.
+
+---
+
 ## Settings reference
 
 `/config show` lists all of these with their current values.
@@ -328,6 +387,7 @@ full HM `5`, title `10`.
 | `viewer_roles` | Who can look people up (empty = everyone) |
 | `submission_mode` | `auto` or `review` |
 | `notify_dm` | DM members when they earn something |
+| `mark_label` | What the `L` marker from the old sheet means |
 | `role_sync` | Hand out Discord roles automatically when achievements are earned |
 | `report_day`, `report_hour` | Weekly report schedule (UTC, `off` to disable) |
 

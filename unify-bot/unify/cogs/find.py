@@ -49,17 +49,21 @@ class Find(commands.Cog):
         words = text.replace(",", " ").split()
         return [w for w in words if w in known], [w for w in words if w not in known]
 
-    async def search(self, has, missing, role, min_parse, parse_label):
+    async def search(self, has, missing, role, min_parse, parse_label, mark=None):
         where = ["m.active = 1"]
         args: list = []
         role_clause = " AND ma.role = ?" if role else ""
+        mark_clause = " AND ma.mark = ?" if mark else ""
 
         for key in has:
             where.append("EXISTS (SELECT 1 FROM member_achievements ma "
-                         f"WHERE ma.member_id = m.id AND ma.achievement_key = ?{role_clause})")
+                         "WHERE ma.member_id = m.id AND ma.achievement_key = ?"
+                         f"{role_clause}{mark_clause})")
             args.append(key)
             if role:
                 args.append(role)
+            if mark:
+                args.append(mark)
         for key in missing:
             where.append("NOT EXISTS (SELECT 1 FROM member_achievements ma "
                          f"WHERE ma.member_id = m.id AND ma.achievement_key = ?{role_clause})")
@@ -86,9 +90,13 @@ class Find(commands.Cog):
         missing="Codes they must not have yet, e.g. 'vssgodslayer'",
         role="Only count clears done as this role",
         min_parse="Only members parsing at least this",
-        parse_label="…on this specific parse, e.g. '3m dummy'",
+        parse_label="…on this specific parse, e.g. 'Arcanist'",
+        marked="Only count the X marks, or only the L marks",
     )
-    @app_commands.choices(role=[app_commands.Choice(name=ROLE_LABEL[r], value=r) for r in ROLES])
+    @app_commands.choices(
+        role=[app_commands.Choice(name=ROLE_LABEL[r], value=r) for r in ROLES],
+        marked=[app_commands.Choice(name="Cleared it (X)", value="X"),
+                app_commands.Choice(name="Marked L on it", value="L")])
     @app_commands.autocomplete(has=autocomplete.achievement_list,
                                missing=autocomplete.achievement_list,
                                parse_label=autocomplete.parse_labels)
@@ -96,7 +104,8 @@ class Find(commands.Cog):
     async def find(self, interaction: discord.Interaction, has: str = "", missing: str = "",
                    role: app_commands.Choice[str] | None = None,
                    min_parse: app_commands.Range[int, 1, 500_000] | None = None,
-                   parse_label: str | None = None):
+                   parse_label: str | None = None,
+                   marked: app_commands.Choice[str] | None = None):
         has_keys, bad_has = await self.validate(has)
         missing_keys, bad_missing = await self.validate(missing)
         unknown = bad_has + bad_missing
@@ -117,7 +126,8 @@ class Find(commands.Cog):
 
         await interaction.response.defer(thinking=True)
         rows = await self.search(has_keys, missing_keys,
-                                 role.value if role else None, min_parse, parse_label)
+                                 role.value if role else None, min_parse, parse_label,
+                                 marked.value if marked else None)
 
         criteria = []
         if has_keys:
@@ -129,6 +139,9 @@ class Find(commands.Cog):
         if min_parse:
             criteria.append(f"⚔️ parsing {min_parse:,}+"
                             + (f" on {parse_label}" if parse_label else ""))
+        if marked:
+            label = await self.bot.setting("mark_label")
+            criteria.append(f"🅛 marked {label}" if marked.value == "L" else "✅ cleared (X)")
         subtitle = "  •  ".join(criteria)
 
         if not rows:

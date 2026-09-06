@@ -16,7 +16,9 @@ ROLE_SHEETS = {
     "dps": "dps", "damage": "dps",
     "awa": "account", "account": "account", "accountwide": "account",
 }
-TRUTHY = {"x", "yes", "y", "true", "1", "✓", "✅", "done"}
+CLEARED = {"x", "yes", "y", "true", "1", "✓", "✅", "done"}
+SECOND_MARK = "l"          # the guild's other marker, kept as-is rather than dropped
+BLANK = {"", "-", "–", "—", "n/a", "na", "no", "0", "none"}
 
 
 def normalize(text: str) -> str:
@@ -116,8 +118,26 @@ def plan_sheet(name: str, headers: list[str], rows: list[list],
     return plan
 
 
+def cell_mark(value) -> str | None:
+    """'X' if the cell says cleared, 'L' for the second marker, None for blank.
+
+    Anything else - a note somebody typed into an achievement column - comes back
+    as None and gets counted separately, so it is reported rather than guessed at."""
+    text = str(value or "").strip().lower()
+    if text in CLEARED:
+        return "X"
+    if text == SECOND_MARK:
+        return "L"
+    return None
+
+
+def cell_is_blank(value) -> bool:
+    return str(value or "").strip().lower() in BLANK
+
+
 def cell_is_true(value) -> bool:
-    return str(value or "").strip().lower() in TRUTHY
+    """Either marker counts as "they have this"."""
+    return cell_mark(value) is not None
 
 
 NUMBER_RE = re.compile(r"([0-9]*\.?[0-9]+)\s*([km])?\s*(?:dps|score|pts?)?")
@@ -135,5 +155,12 @@ def cell_number(value) -> int | None:
     match = NUMBER_RE.fullmatch(text)
     if match is None:
         return None
-    number = float(match.group(1)) * {"k": 1_000, "m": 1_000_000}.get(match.group(2), 1)
+    number = float(match.group(1))
+    suffix = match.group(2)
+    # "112k" means 112,000, but this guild also writes full scores with a stray k
+    # on the end ("245,469k" is 245,469 - a trial score, not 245 million). Only
+    # treat the suffix as a multiplier when the number in front is small enough
+    # for it to have been meant that way.
+    if suffix and number < 1000:
+        number *= {"k": 1_000, "m": 1_000_000}[suffix]
     return int(number)

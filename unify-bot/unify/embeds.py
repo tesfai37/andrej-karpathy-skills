@@ -9,7 +9,7 @@ import discord
 from .config import ROLE_EMOJI, ROLE_LABEL
 
 FULL, EMPTY = "▰", "▱"
-TICK, CROSS = "✅", "⬜"
+TICK, CROSS, MARK = "✅", "⬜", "🅛"
 KIND_ICON = {"clear": "🔹", "boss": "🔸", "hm": "🔥", "title": "🏅"}
 
 FIELD_LIMIT = 1024          # Discord's cap on an embed field value
@@ -152,8 +152,10 @@ def profile_embed(
     return e
 
 
-def trial_embed(brand: Brand, gamertag: str, role: str, trial: dict, rows: list[dict]) -> discord.Embed:
+def trial_embed(brand: Brand, gamertag: str, role: str, trial: dict, rows: list[dict],
+                mark_label: str = "Lead") -> discord.Embed:
     done = sum(1 for r in rows if r["have"])
+    marked = sum(1 for r in rows if r.get("mark") == "L")
     e = discord.Embed(
         title=f"{trial['emoji']}  {trial['name']} — {gamertag}",
         color=brand.color,
@@ -163,12 +165,13 @@ def trial_embed(brand: Brand, gamertag: str, role: str, trial: dict, rows: list[
     e.add_field(
         name="​",
         value=lines_within([
-            f"{TICK if r['have'] else CROSS} {KIND_ICON.get(r['kind'], '•')} {r['name']}"
+            f"{MARK if r.get('mark') == 'L' else TICK if r['have'] else CROSS} "
+            f"{KIND_ICON.get(r['kind'], '•')} {r['name']}"
             for r in rows
         ]) or "_No achievements configured for this trial._",
         inline=False,
     )
-    e.set_footer(text=brand.name)
+    e.set_footer(text=f"{brand.name}  •  {MARK} = {mark_label}" if marked else brand.name)
     return e
 
 

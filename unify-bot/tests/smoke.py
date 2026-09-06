@@ -68,13 +68,13 @@ async def test_prerequisites() -> None:
     print("\nprerequisite chains")
     with tempfile.TemporaryDirectory() as tmp:
         db = await fresh_db(f"{tmp}/t.sqlite3")
-        got = set(await store.expand_prerequisites(db, ["vsshm"]))
-        check("vsshm pulls in every Sunspire boss",
-              got == {"vss", "vssice", "vssfire", "vssnavi", "vsshm"}, str(sorted(got)))
+        got = set(await store.expand_prerequisites(db, ["extinguisher"]))
+        check("extinguisher pulls in every Sunspire boss",
+              got == {"vss", "vssice", "vssfire", "vssnavi", "extinguisher"}, str(sorted(got)))
 
         member = await store.create_member(db, "BUDMAN008", 478079177224880128)
-        added = await store.grant(db, member, "dps", ["vsshm"], 1, "tester")
-        check("granting vsshm records 5 rows", len(added) == 5, str(added))
+        added = await store.grant(db, member, "dps", ["extinguisher"], 1, "tester")
+        check("granting extinguisher records 5 rows", len(added) == 5, str(added))
         again = await store.grant(db, member, "dps", ["vss"], 1, "tester")
         check("re-granting adds nothing", again == [])
 
@@ -82,7 +82,7 @@ async def test_prerequisites() -> None:
         check("revoking vss cascades to everything above it", len(removed) == 5, str(removed))
         check("nothing left on the record", await store.owned(db, member.id, "dps") == set())
 
-        await store.grant(db, member, "dps", ["vssgodslayer"], 1, "tester")
+        await store.grant(db, member, "dps", ["godslayer"], 1, "tester")
         check("godslayer is worth 6 achievements",
               len(await store.owned(db, member.id, "dps")) == 6)
         check("points are weighted by kind", await store.points(db, member.id) == 1 + 3 * 3 + 5 + 10,
@@ -129,9 +129,9 @@ async def test_message_parsing() -> None:
               parsed.keys == ["vas", "vas1", "vas2", "vasir"], str(parsed.keys))
         check("nothing left unmapped", parsed.unmapped_role_ids == [])
 
-        parsed = await parsing.parse_message(db, "BUDMAN008 healer vsshm vkahm")
+        parsed = await parsing.parse_message(db, "BUDMAN008 healer extinguisher vkahm")
         check("plain typed keys work too",
-              parsed.keys == ["vsshm", "vkahm"] and parsed.roles == ["healer"])
+              parsed.keys == ["extinguisher", "vkahm"] and parsed.roles == ["healer"])
         check("gamertag survives as a leftover word",
               "BUDMAN008" in parsed.leftover_words)
 
@@ -219,7 +219,7 @@ async def test_identity_safety() -> None:
 
         # the silent-merge regression
         carol = (await store.upsert_member(db, "CAROL", 111)).member
-        await store.grant(db, carol, "dps", ["vsshm"], 1, "tester")
+        await store.grant(db, carol, "dps", ["extinguisher"], 1, "tester")
         result = await store.upsert_member(db, "DAVE", 111)
         check("a new gamertag never renames the account's current owner",
               result.member.gamertag == "DAVE" and result.created)
@@ -317,7 +317,7 @@ async def test_role_sync() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         db = await fresh_db(f"{tmp}/t.sqlite3")
         vss = FakeRole(10, "vSS", 5)
-        vsshm = FakeRole(11, "vSS HM", 6)
+        extinguisher = FakeRole(11, "vSS HM", 6)
         godslayer = FakeRole(12, "Godslayer", 7)
         too_high = FakeRole(13, "vKA HM", 99)
         unrelated = FakeRole(14, "Raider", 4)
@@ -326,8 +326,8 @@ async def test_role_sync() -> None:
         await db.run_many([
             ("INSERT INTO role_map(discord_role_id, kind, value, label) VALUES(?,?,?,?)", row)
             for row in [(10, "achievement", "vss", "vSS"),
-                        (11, "achievement", "vsshm", "vSS HM"),
-                        (12, "achievement", "vssgodslayer", "Godslayer"),
+                        (11, "achievement", "extinguisher", "vSS HM"),
+                        (12, "achievement", "godslayer", "Godslayer"),
                         (13, "achievement", "vkahm", "vKA HM")]
         ])
 
@@ -335,10 +335,10 @@ async def test_role_sync() -> None:
         # they hold an unrelated role plus a stale Godslayer they never earned
         person = FakePerson([unrelated, godslayer])
         me = FakePerson([bot_role])
-        guild = FakeGuild([vss, vsshm, godslayer, too_high, unrelated, bot_role],
+        guild = FakeGuild([vss, extinguisher, godslayer, too_high, unrelated, bot_role],
                           {4001: person}, me)
 
-        await store.grant(db, member, "dps", ["vsshm"], 1, "tester")   # -> vss + vsshm
+        await store.grant(db, member, "dps", ["extinguisher"], 1, "tester")   # -> vss + extinguisher
         plan = await rolesync.plan_member(db, guild, member)
         check("earned roles are queued to add",
               {r.name for r in plan.add} == {"vSS", "vSS HM"}, str(plan.add))
@@ -379,9 +379,9 @@ async def test_find() -> None:
         healer = await store.create_member(db, "MENDER", 3)
         await store.create_member(db, "BENCHED", 4)
 
-        await store.grant(db, ace, "dps", ["vssgodslayer"], 1, "t")     # everything vSS
-        await store.grant(db, rook, "dps", ["vsshm"], 1, "t")           # vSS HM, no title
-        await store.grant(db, healer, "healer", ["vsshm"], 1, "t")      # as a healer
+        await store.grant(db, ace, "dps", ["godslayer"], 1, "t")     # everything vSS
+        await store.grant(db, rook, "dps", ["extinguisher"], 1, "t")           # vSS HM, no title
+        await store.grant(db, healer, "healer", ["extinguisher"], 1, "t")      # as a healer
         await store.set_parse(db, ace, "3m dummy", 118_000, 1, "t")
         await store.set_parse(db, rook, "3m dummy", 92_000, 1, "t")
 
@@ -392,23 +392,70 @@ async def test_find() -> None:
             return [r["gamertag"] for r in await cog.search(**kw)]
 
         check("has: finds everyone with the clear",
-              sorted(await names(has=["vsshm"])) == ["ACE", "MENDER", "ROOK"])
+              sorted(await names(has=["extinguisher"])) == ["ACE", "MENDER", "ROOK"])
         check("role: narrows to how it was cleared",
-              sorted(await names(has=["vsshm"], role="dps")) == ["ACE", "ROOK"])
+              sorted(await names(has=["extinguisher"], role="dps")) == ["ACE", "ROOK"])
         check("missing: the actual raid-building question",
-              await names(has=["vsshm"], missing=["vssgodslayer"], role="dps") == ["ROOK"])
+              await names(has=["extinguisher"], missing=["godslayer"], role="dps") == ["ROOK"])
         check("min_parse filters on numbers",
-              await names(has=["vsshm"], min_parse=100_000) == ["ACE"])
+              await names(has=["extinguisher"], min_parse=100_000) == ["ACE"])
         check("parse_label scopes the number",
               await names(min_parse=90_000, parse_label="nonexistent") == [])
         check("results lead with the most experienced",
               await names(has=["vss"], role="dps") == ["ACE", "ROOK"])
         check("nobody on the bench sneaks in", "BENCHED" not in await names(has=["vss"]))
 
-        good, bad = await cog.validate("vsshm nonsense vkahm")
+        good, bad = await cog.validate("extinguisher nonsense vkahm")
         check("unknown codes are rejected, known ones kept",
-              good == ["vsshm", "vkahm"] and bad == ["nonsense"])
+              good == ["extinguisher", "vkahm"] and bad == ["nonsense"])
         await db.close()
+
+
+async def test_marks_and_formats() -> None:
+    """The guild's sheet uses a second marker and its own number style."""
+    print("\nreal-world data quirks")
+    check("X is a clear", importer.cell_mark("X") == "X")
+    check("L is kept as its own marker", importer.cell_mark("l") == "L")
+    check("both markers count as 'they have it'",
+          importer.cell_is_true("X") and importer.cell_is_true("L"))
+    check("notes typed into a cell are neither",
+          importer.cell_mark("banned") is None and importer.cell_mark("NA/EU") is None)
+    check("…and are distinguishable from a blank cell",
+          not importer.cell_is_blank("banned") and importer.cell_is_blank("-"))
+
+    check("112k means 112,000", importer.cell_number("112k") == 112_000)
+    check("245,469k means 245,469 - the k is noise on a full number",
+          importer.cell_number("245,469k") == 245_469)
+    check("620,580k likewise", importer.cell_number("620,580k") == 620_580)
+    check("1.2m still multiplies", importer.cell_number("1.2m") == 1_200_000)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        member = await store.create_member(db, "LEADER", 1)
+        await store.grant(db, member, "dps", ["vmol"], 1, "t", mark="L")
+        rows = await store.trial_detail(db, member.id, "dps", "vmol")
+        check("the marker survives into the trial view",
+              [r["mark"] for r in rows if r["have"]] == ["L"])
+        check("a marked achievement still counts as held",
+              "vmol" in await store.owned(db, member.id, "dps"))
+        e = embeds.trial_embed(embeds.Brand(), "LEADER", "dps",
+                               {"emoji": "🌑", "name": "Maw"}, rows, "Lead")
+        check("the trial page shows the marker and explains it",
+              embeds.MARK in e.fields[0].value and "Lead" in e.footer.text)
+        await db.close()
+
+
+async def test_name_matching() -> None:
+    print("\nlinking old Discord names")
+    from unify.cogs.admin import strip_discriminator
+    check("a legacy discriminator is ignored",
+          strip_discriminator("A Sly Man#9733") == "a sly man")
+    check("a modern username is untouched",
+          strip_discriminator("crow.man") == "crow.man")
+    check("trailing dots are kept - they are part of the name",
+          strip_discriminator("adecentdude.") == "adecentdude.")
+    check("a four-digit name is not mistaken for a discriminator",
+          strip_discriminator("1234") == "1234")
 
 async def main() -> None:
     await test_command_tree()
@@ -419,6 +466,8 @@ async def main() -> None:
     await test_display_limits()
     await test_role_sync()
     await test_find()
+    await test_marks_and_formats()
+    await test_name_matching()
     print()
     if failures:
         print(f"{len(failures)} check(s) failed: {', '.join(failures)}")

@@ -1,6 +1,7 @@
 """Drag-and-drop import, and export in whatever shape somebody needs."""
 from __future__ import annotations
 
+import collections
 import csv
 import io
 import zipfile
@@ -187,6 +188,7 @@ class DataIO(commands.Cog):
             return out
 
         new_people = granted = scored = parsed = 0
+        unreadable: collections.Counter = collections.Counter()
         conflicts: list[str] = []
         statements: list[tuple[str, tuple]] = []
         for plan in plans:
@@ -208,13 +210,22 @@ class DataIO(commands.Cog):
                     conflicts.append(result.conflict)
 
                 if plan.kind == "achievements":
-                    hits = [key for col, key in plan.value_cols.items()
-                            if col < len(row) and importer.cell_is_true(row[col])]
-                    for key in with_prerequisites(hits):
+                    marks = {}
+                    for col, key in plan.value_cols.items():
+                        if col >= len(row):
+                            continue
+                        mark = importer.cell_mark(row[col])
+                        if mark:
+                            marks[key] = mark
+                        elif not importer.cell_is_blank(row[col]):
+                            unreadable[str(row[col]).strip()] += 1
+                    # A prerequisite that wasn't spelled out is a plain clear.
+                    for key in with_prerequisites(list(marks)):
                         statements.append((
                             "INSERT OR IGNORE INTO member_achievements"
-                            "(member_id, role, achievement_key, granted_by) VALUES(?,?,?,?)",
-                            (member.id, plan.role, key, actor.id)))
+                            "(member_id, role, achievement_key, mark, granted_by) "
+                            "VALUES(?,?,?,?,?)",
+                            (member.id, plan.role, key, marks.get(key, "X"), actor.id)))
                         granted += 1
                 elif plan.kind == "scores":
                     for col, trial_key in plan.value_cols.items():
@@ -243,7 +254,16 @@ class DataIO(commands.Cog):
             bits.append(f"🏆 {scored} scores")
         if parsed:
             bits.append(f"⚔️ {parsed} parses")
+        marks = await db.val(
+            "SELECT COUNT(*) FROM member_achievements WHERE mark = 'L'", (), 0)
+        if marks:
+            label = await self.bot.setting("mark_label")
+            bits.append(f"🅛 {marks} marked {label}")
         summary = " • ".join(bits)
+        if unreadable:
+            shown = ", ".join(f"`{v}` ×{n}" for v, n in unreadable.most_common(6))
+            summary += (f"\n\n📝 Cells I couldn't read (left out, nothing was guessed): "
+                        f"{shown}")
         if granted and await self.bot.setting("role_sync"):
             summary += "\n\n🔗 Run `/sync all` to hand out the Discord roles for these."
         if conflicts:

@@ -166,7 +166,9 @@ class ProfileView(OwnedView):
             trial = dict(await db.one("SELECT * FROM trials WHERE key = ?", (self.trial_key,)))
             detail = await store.trial_detail(db, self.member.id, self.role, self.trial_key)
             self.add_item(BackButton())
-            return embeds.trial_embed(self.bot.brand, self.member.gamertag, self.role, trial, detail)
+            return embeds.trial_embed(
+                self.bot.brand, self.member.gamertag, self.role, trial, detail,
+                await self.bot.setting("mark_label"))
 
         return embeds.profile_embed(
             self.bot.brand,

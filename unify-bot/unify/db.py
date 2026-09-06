@@ -37,8 +37,9 @@ CREATE TABLE IF NOT EXISTS achievements (
 CREATE TABLE IF NOT EXISTS members (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     discord_id INTEGER UNIQUE,
-    gamertag   TEXT NOT NULL COLLATE NOCASE UNIQUE,
-    active     INTEGER NOT NULL DEFAULT 1,
+    gamertag    TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    legacy_name TEXT NOT NULL DEFAULT '',   -- DiscordName as it appeared in the old sheet
+    active      INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -46,6 +47,7 @@ CREATE TABLE IF NOT EXISTS member_achievements (
     member_id       INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
     role            TEXT NOT NULL,            -- tank | healer | dps | account
     achievement_key TEXT NOT NULL REFERENCES achievements(key) ON DELETE CASCADE,
+    mark            TEXT NOT NULL DEFAULT 'X',   -- 'X' cleared, 'L' the guild's second marker
     granted_at      TEXT NOT NULL DEFAULT (datetime('now')),
     granted_by      INTEGER,
     PRIMARY KEY (member_id, role, achievement_key)
@@ -67,6 +69,15 @@ CREATE TABLE IF NOT EXISTS parses (
     recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
     recorded_by INTEGER,
     PRIMARY KEY (member_id, label)
+);
+
+CREATE TABLE IF NOT EXISTS guides (
+    category   TEXT NOT NULL COLLATE NOCASE,
+    topic      TEXT NOT NULL COLLATE NOCASE,
+    body       TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by INTEGER,
+    PRIMARY KEY (category, topic)
 );
 
 CREATE TABLE IF NOT EXISTS role_map (
@@ -120,7 +131,19 @@ class Database:
         self.conn.row_factory = aiosqlite.Row
         await self.conn.execute("PRAGMA journal_mode=WAL")
         await self.conn.executescript(SCHEMA)
+        await self._add_missing_columns()
         await self.conn.commit()
+
+    async def _add_missing_columns(self) -> None:
+        """CREATE TABLE IF NOT EXISTS won't add a column to a database that
+        already exists, so new columns are applied here instead."""
+        for table, column, ddl in (
+            ("member_achievements", "mark", "mark TEXT NOT NULL DEFAULT 'X'"),
+            ("members", "legacy_name", "legacy_name TEXT NOT NULL DEFAULT ''"),
+        ):
+            have = {r[1] for r in await self.all(f"PRAGMA table_info({table})")}
+            if column not in have:
+                await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
     async def close(self) -> None:
         if self.conn:

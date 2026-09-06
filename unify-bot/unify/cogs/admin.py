@@ -1,6 +1,8 @@
 """Admin commands. Every one of them writes to the audit log and can be undone."""
 from __future__ import annotations
 
+import re
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -12,6 +14,12 @@ from ..config import ROLES, ROLE_LABEL
 ROLE_CHOICES = [app_commands.Choice(name=ROLE_LABEL[r], value=r) for r in ROLES] + [
     app_commands.Choice(name="Account Wide", value="account")
 ]
+
+
+def strip_discriminator(name: str) -> str:
+    """"A Sly Man#9733" and "A Sly Man" are the same person - Discord retired
+    the #1234 suffix, but the old spreadsheet still carries it."""
+    return re.sub(r"#\d{4}$", "", str(name or "").strip()).strip().lower()
 
 
 async def need_member(interaction: discord.Interaction, query: str) -> store.Member | None:
@@ -78,6 +86,83 @@ class Admin(commands.Cog):
                              f"{member.gamertag} -> {user}", entry)
         await interaction.response.send_message(
             embed=embeds.success(f"**{member.gamertag}** is now {user.mention}."))
+
+    @member_group.command(
+        name="match",
+        description="Link everybody at once by matching saved Discord names to your server")
+    @admin_only()
+    async def member_match(self, interaction: discord.Interaction):
+        """The old spreadsheet stored Discord display names, not account ids. This
+        looks each saved name up against the server and links the exact matches."""
+        await interaction.response.defer(thinking=True)
+        guild = interaction.guild
+
+        index: dict[str, set[int]] = {}
+        for person in guild.members:
+            for alias in {person.name, person.global_name, person.display_name}:
+                if alias:
+                    index.setdefault(strip_discriminator(alias), set()).add(person.id)
+
+        rows = await self.bot.db.all(
+            "SELECT id, gamertag, legacy_name FROM members "
+            "WHERE active = 1 AND discord_id IS NULL AND TRIM(legacy_name) <> ''")
+        taken = {r[0] for r in await self.bot.db.all(
+            "SELECT discord_id FROM members WHERE discord_id IS NOT NULL")}
+
+        proposed: dict[int, tuple[int, str, str]] = {}   # discord id -> (member id, tag, name)
+        ambiguous = unmatched = 0
+        for row in rows:
+            hits = index.get(strip_discriminator(row["legacy_name"]))
+            if not hits:
+                unmatched += 1
+            elif len(hits) > 1:
+                ambiguous += 1
+            else:
+                discord_id = next(iter(hits))
+                if discord_id in taken or discord_id in proposed:
+                    ambiguous += 1          # two roster entries want the same account
+                    proposed.pop(discord_id, None)
+                else:
+                    proposed[discord_id] = (row["id"], row["gamertag"], row["legacy_name"])
+
+        if not proposed:
+            return await interaction.followup.send(embed=embeds.warn(
+                f"No exact matches among {len(rows)} unlinked members.\n"
+                f"{ambiguous} were ambiguous and {unmatched} had no match — those need "
+                "`/member link` one at a time."))
+
+        sample = list(proposed.values())[:8]
+        e = embeds.base(
+            self.bot.brand, "🔗  Match Discord accounts",
+            f"**{len(proposed)}** of {len(rows)} unlinked members match exactly.\n"
+            f"_{ambiguous} ambiguous, {unmatched} with no match — left alone._")
+        e.add_field(name="Examples", value=embeds.lines_within(
+            [f"**{tag}** ← `{name}`" for _, tag, name in sample]), inline=False)
+        e.add_field(name="​", value="Only exact, unambiguous matches are linked. "
+                                    "`/undo` reverses the whole batch.", inline=False)
+
+        view = views.Confirm(interaction.user.id, "Link them", discord.ButtonStyle.success)
+        message = await interaction.followup.send(embed=e, view=view, wait=True)
+        view.message = message
+        await view.wait()
+        if not view.result:
+            return await message.edit(embed=embeds.warn("Cancelled — nothing was linked."),
+                                      view=None)
+
+        await self.bot.db.run_many([
+            ("UPDATE members SET discord_id = ? WHERE id = ?", (discord_id, member_id))
+            for discord_id, (member_id, _, _) in proposed.items()
+        ])
+        entry = await store.log_action(
+            self.bot.db, interaction.user.id, str(interaction.user), "member match",
+            f"linked {len(proposed)} members",
+            undo=[("UPDATE members SET discord_id = NULL WHERE id = ?", (member_id,))
+                  for member_id, _, _ in proposed.values()])
+        await self.bot.audit(interaction.user, "members matched",
+                             f"linked {len(proposed)} accounts", entry)
+        await message.edit(embed=embeds.success(
+            f"Linked **{len(proposed)}** members.\n"
+            "If role sync is on, follow up with `/sync all`."), view=None)
 
     @member_group.command(name="rename", description="Change somebody's gamertag")
     @app_commands.autocomplete(gamertag=autocomplete.members)

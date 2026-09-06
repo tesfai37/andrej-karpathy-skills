@@ -26,6 +26,8 @@ SECTIONS: list[tuple[str, str, bool, list[tuple[str, str]]]] = [
         ("/parse", "Their parse numbers"),
         ("/find", "Who has (and hasn't) cleared what — for building a group"),
         ("/roster", "Everyone in the guild"),
+        ("/guide show", "CP builds, channel links and guild reference"),
+        ("/guide list", "Everything the bot can tell you about"),
     ]),
     ("Leaderboards", "📊", False, [
         ("/leaderboard", "Points, achievements, scores or parses"),
@@ -34,6 +36,7 @@ SECTIONS: list[tuple[str, str, bool, list[tuple[str, str]]]] = [
     ("Admin · people", "👥", True, [
         ("/member add", "Put somebody on the roster"),
         ("/member link", "Connect a gamertag to a Discord account"),
+        ("/member match", "Link everybody at once from the old Discord names"),
         ("/member rename", "Change a gamertag"),
         ("/member remove", "Take somebody off the roster"),
     ]),
@@ -45,6 +48,8 @@ SECTIONS: list[tuple[str, str, bool, list[tuple[str, str]]]] = [
         ("/trial add", "Add a brand new trial"),
         ("/achievement new", "Add a new achievement to a trial"),
         ("/achievement rename", "Change how an achievement is displayed"),
+        ("/guide save", "Add or edit a CP build, link list or setup"),
+        ("/guide delete", "Remove one"),
     ]),
     ("Admin · setup", "🔗", True, [
         ("/setup", "The one-screen setup — start here"),
