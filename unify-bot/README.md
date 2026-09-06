@@ -281,6 +281,8 @@ full HM `5`, title `10`.
 | "I couldn't tell who this is for" | `/member add` them, or `/member link` their gamertag to their Discord account. |
 | Wrong data got in | `/undo`. For something older, `/audit` to find the number, then `/undo 42`. |
 | An achievement's name is wrong | `/achievement rename` — the seed names are a starting point, not gospel. |
+| *"that Discord account is already X"* | Two gamertags are pointing at one Discord account. Nothing was overwritten — decide which is right, then `/member rename` or `/member link`. |
+| An import skipped a column | It's listed in the preview under *Columns I'll ignore*. Add it with `/achievement new`, then import again. |
 
 ---
 

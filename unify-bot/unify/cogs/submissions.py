@@ -197,11 +197,16 @@ class Submissions(commands.Cog):
         await self.post_for_review(message, member, role, parsed.keys)
 
     async def identify(self, parsed: parsing.Parsed) -> store.Member | None:
+        """A @mention is taken as the final answer. Only when the post names
+        nobody do we fall back to matching a word against a gamertag - otherwise
+        a stray word could quietly redirect a clear onto the wrong person."""
         db = self.bot.db
-        for discord_id in parsed.discord_ids:
-            found = await store.find_member(db, discord_id)
-            if found:
-                return found
+        if parsed.discord_ids:
+            for discord_id in parsed.discord_ids:
+                found = await store.find_member(db, discord_id)
+                if found:
+                    return found
+            return None
         for word in parsed.leftover_words:
             found = await store.find_member(db, word)
             if found:

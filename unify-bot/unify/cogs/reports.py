@@ -28,6 +28,12 @@ class Reports(commands.Cog):
 
     @tasks.loop(minutes=30)
     async def tick(self):
+        try:
+            await self.run_once()
+        except Exception:
+            log.exception("scheduled report check failed")
+
+    async def run_once(self):
         now = datetime.now(timezone.utc)
         day = await self.bot.setting("report_day")
         if day == "off" or DAYS[now.weekday()] != day:
@@ -45,8 +51,9 @@ class Reports(commands.Cog):
         await self.bot.db.set_setting("_last_report", stamp)
         try:
             await channel.send(embed=await self.summary(), file=await self.attachment())
-        except discord.HTTPException:
-            log.warning("weekly report could not be posted")
+        except Exception:
+            # A background loop that raises stops for good, so nothing escapes here.
+            log.exception("weekly report could not be posted")
 
     @tick.before_loop
     async def before(self):

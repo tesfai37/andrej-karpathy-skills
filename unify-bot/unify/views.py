@@ -127,8 +127,8 @@ class TrialSelect(discord.ui.Select):
             placeholder="Open a trial for the full breakdown…",
             options=[
                 discord.SelectOption(
-                    label=t["name"], value=t["key"],
-                    emoji=t["emoji"] or None,
+                    label=t["name"][:100], value=t["key"],
+                    emoji=embeds.as_emoji(t["emoji"]),
                     description=f"{t['done']}/{t['total']} done",
                     default=t["key"] == current,
                 )

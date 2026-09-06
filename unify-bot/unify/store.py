@@ -32,16 +32,17 @@ async def get_member(db: Database, member_id: int) -> Member | None:
 
 
 async def find_member(db: Database, query: str | int) -> Member | None:
-    """Accept a discord id, a <@mention>, or a gamertag - whatever the user typed."""
+    """Accept a discord id, a <@mention>, or a gamertag - whatever the user typed.
+
+    Only a 15-25 digit run counts as a Discord id; anything else is treated as a
+    gamertag, so a member who calls themselves "3" can never resolve to somebody
+    else's database row."""
     if isinstance(query, int):
         return _member(await db.one("SELECT * FROM members WHERE discord_id = ?", (query,)))
     q = str(query).strip()
     digits = q.strip("<@!>&")
-    if digits.isdigit():
+    if digits.isdigit() and 15 <= len(digits) <= 25:
         row = await db.one("SELECT * FROM members WHERE discord_id = ?", (int(digits),))
-        if row:
-            return _member(row)
-        row = await db.one("SELECT * FROM members WHERE id = ?", (int(digits),))
         if row:
             return _member(row)
     return _member(await db.one("SELECT * FROM members WHERE gamertag = ?", (q,)))
@@ -64,22 +65,45 @@ async def create_member(db: Database, gamertag: str, discord_id: int | None) -> 
     return await get_member(db, cur.lastrowid)
 
 
-async def upsert_member(db: Database, gamertag: str, discord_id: int | None) -> tuple[Member, bool]:
-    """Returns (member, created). Links a discord id onto an existing gamertag."""
-    existing = await find_member(db, gamertag)
-    if existing is None and discord_id:
-        existing = await find_member(db, discord_id)
-    if existing:
-        updates = []
-        if discord_id and existing.discord_id != discord_id:
-            updates.append(("UPDATE members SET discord_id = ? WHERE id = ?", (discord_id, existing.id)))
-        if gamertag and existing.gamertag.lower() != gamertag.strip().lower():
-            updates.append(("UPDATE members SET gamertag = ? WHERE id = ?", (gamertag.strip(), existing.id)))
-        if updates:
-            await db.run_many(updates)
-            existing = await get_member(db, existing.id)
-        return existing, False
-    return await create_member(db, gamertag, discord_id), True
+@dataclass
+class Upsert:
+    member: Member
+    created: bool
+    conflict: str = ""      # empty when nothing surprising happened
+
+
+async def upsert_member(db: Database, gamertag: str, discord_id: int | None) -> Upsert:
+    """Find or create a member by gamertag, linking a Discord account when it is free.
+
+    Deliberately never renames anybody and never moves a Discord link off an
+    existing member: a spreadsheet with the same Discord id against two different
+    gamertags used to silently merge those two people into one record and hand one
+    of them the other's achievements. Now both survive and the caller is told."""
+    gamertag = gamertag.strip()
+    by_tag = await find_member(db, gamertag)
+    owner = await find_member(db, discord_id) if discord_id else None
+
+    if by_tag:
+        if discord_id and by_tag.discord_id == discord_id:
+            return Upsert(by_tag, False)
+        if discord_id and by_tag.discord_id:
+            return Upsert(by_tag, False,
+                          f"{gamertag} is already linked to a different Discord account")
+        if discord_id and owner and owner.id != by_tag.id:
+            return Upsert(by_tag, False,
+                          f"that Discord account is already {owner.gamertag}")
+        if discord_id:
+            await db.run("UPDATE members SET discord_id = ? WHERE id = ?", (discord_id, by_tag.id))
+            return Upsert(await get_member(db, by_tag.id), False)
+        return Upsert(by_tag, False)
+
+    if owner:
+        # New gamertag, but this Discord account already belongs to somebody. Keep
+        # both records rather than renaming one of them out of existence.
+        return Upsert(await create_member(db, gamertag, None), True,
+                      f"{gamertag} added without a Discord link - "
+                      f"that account is already {owner.gamertag}")
+    return Upsert(await create_member(db, gamertag, discord_id), True)
 
 
 # ------------------------------------------------------------------- achievement graph

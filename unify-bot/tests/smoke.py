@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import discord  # noqa: E402
 import json
 import sys
 import tempfile
@@ -14,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from unify import importer, parsing, store  # noqa: E402
+from unify import embeds, importer, parsing, store  # noqa: E402
 from unify.bot import COGS, UnifyBot  # noqa: E402
 from unify.config import Env  # noqa: E402
 from unify.db import Database  # noqa: E402
@@ -178,6 +179,12 @@ async def test_import() -> None:
         check("Parse sheet detected", plans["Parse"].kind == "parses")
 
         check("112k parses to 112000", importer.cell_number("112k") == 112000)
+        check("112k dps keeps its thousands", importer.cell_number("112k dps") == 112000)
+        check("prose is not mined for digits",
+              importer.cell_number("see notes 2024") is None
+              and importer.cell_number("did 3 runs") is None)
+        check("n/a and dashes are not zero",
+              importer.cell_number("n/a") is None and importer.cell_number("-") is None)
         check("98,400 parses to 98400", importer.cell_number("98,400") == 98400)
         check("1.2m parses to 1200000", importer.cell_number("1.2m") == 1200000)
         check("blank cell is None", importer.cell_number("") is None)
@@ -186,11 +193,85 @@ async def test_import() -> None:
         await db.close()
 
 
+
+async def test_identity_safety() -> None:
+    """Regressions that used to hand one member another member's record."""
+    print("\nidentity safety")
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        alice = await store.create_member(db, "ALICE", None)          # row id 1
+        bob = await store.create_member(db, "BOB", None)              # row id 2
+        await store.create_member(db, "1234", None)                   # numeric gamertag
+
+        check("a bare number is not a database row id",
+              await store.find_member(db, str(bob.id)) is None,
+              f"looking up '{bob.id}' must not return BOB")
+        check("a numeric gamertag still resolves to itself",
+              (await store.find_member(db, "1234")).gamertag == "1234")
+        check("a real snowflake still resolves",
+              (await store.find_member(db, "<@478079177224880128>")) is None)
+        await db.run("UPDATE members SET discord_id = 478079177224880128 WHERE id = ?",
+                     (alice.id,))
+        check("…once somebody owns it",
+              (await store.find_member(db, "<@478079177224880128>")).gamertag == "ALICE")
+
+        # the silent-merge regression
+        carol = (await store.upsert_member(db, "CAROL", 111)).member
+        await store.grant(db, carol, "dps", ["vsshm"], 1, "tester")
+        result = await store.upsert_member(db, "DAVE", 111)
+        check("a new gamertag never renames the account's current owner",
+              result.member.gamertag == "DAVE" and result.created)
+        check("…and the original member is untouched",
+              (await store.get_member(db, carol.id)).gamertag == "CAROL")
+        check("…keeping all five achievements",
+              len(await store.owned(db, carol.id, "dps")) == 5)
+        check("…and the clash is reported, not swallowed", bool(result.conflict),
+              result.conflict)
+        check("DAVE was left unlinked rather than stealing the account",
+              result.member.discord_id is None)
+
+        linked = await store.upsert_member(db, "BOB", 222)
+        check("an unclaimed gamertag still gets linked normally",
+              linked.member.discord_id == 222 and not linked.conflict)
+        await db.close()
+
+
+async def test_display_limits() -> None:
+    """Everything an admin can type must survive Discord's validation."""
+    print("\ndisplay safety")
+    check("a progress bar can never overrun its width", len(embeds.bar(9, 5, 6)) == 6)
+    check("an empty bar is still full width", len(embeds.bar(0, 5, 6)) == 6)
+    check("a word is rejected as an emoji", embeds.as_emoji("bone") is None)
+    check("a real emoji is kept", embeds.as_emoji("🐉") == "🐉")
+    check("a custom server emoji is kept",
+          embeds.as_emoji("<:vss:706551984019742740>") is not None)
+    check("a blank emoji is None", embeds.as_emoji("  ") is None)
+    check("SelectOption accepts what as_emoji allows",
+          discord.SelectOption(label="x", value="x",
+                               emoji=embeds.as_emoji("bone")).emoji is None)
+
+    brand = embeds.Brand()
+    rows = [{"key": f"t{i}", "name": f"Trial number {i}", "short": f"vT{i:02d}",
+             "emoji": "🐉", "sort": i, "total": 6, "done": 3} for i in range(60)]
+    e = embeds.profile_embed(brand, "X" * 40, 1, "dps", rows,
+                             [f"Title {i}" for i in range(60)], 999_999, 4242)
+    check("a 60-trial profile stays inside every embed limit",
+          all(len(f.value) <= 1024 for f in e.fields) and len(e) <= 6000,
+          f"{len(e)} chars, longest field {max(len(f.value) for f in e.fields)}")
+
+    detail = [{"key": f"a{i}", "name": f"A very long achievement name number {i}",
+               "kind": "boss", "have": i % 2, "granted_at": None} for i in range(60)]
+    e = embeds.trial_embed(brand, "X", "dps", {"emoji": "🐉", "name": "Trial"}, detail)
+    check("a 60-achievement trial page stays inside its limits",
+          all(len(f.value) <= 1024 for f in e.fields) and len(e) <= 6000)
+
 async def main() -> None:
     await test_command_tree()
     await test_prerequisites()
     await test_message_parsing()
     await test_import()
+    await test_identity_safety()
+    await test_display_limits()
     print()
     if failures:
         print(f"{len(failures)} check(s) failed: {', '.join(failures)}")

@@ -87,9 +87,17 @@ class DataIO(commands.Cog):
         await interaction.response.defer(thinking=True, ephemeral=True)
         kind = fmt.value if fmt else "xlsx"
         file = await self.build_export(kind)
-        await interaction.followup.send(
-            embed=embeds.success(f"Export ready — {datetime.now(timezone.utc):%d %b %Y %H:%M} UTC"),
-            file=file, ephemeral=True)
+        try:
+            await interaction.followup.send(
+                embed=embeds.success(
+                    f"Export ready — {datetime.now(timezone.utc):%d %b %Y %H:%M} UTC"),
+                file=file, ephemeral=True)
+        except discord.HTTPException as exc:
+            if exc.status != 413:
+                raise
+            return await interaction.followup.send(embed=embeds.error(
+                "The export is bigger than this server's upload limit. Try "
+                "`/export fmt:CSV files` — it compresses much smaller."), ephemeral=True)
         await self.bot.audit(interaction.user, "export", kind)
 
     # ------------------------------------------------------------------ import
@@ -179,6 +187,7 @@ class DataIO(commands.Cog):
             return out
 
         new_people = granted = scored = parsed = 0
+        conflicts: list[str] = []
         statements: list[tuple[str, tuple]] = []
         for plan in plans:
             _, rows = sheets[plan.name]
@@ -190,9 +199,13 @@ class DataIO(commands.Cog):
                 discord_id = None
                 if 0 <= plan.discord_col < len(row):
                     raw = str(row[plan.discord_col] or "").strip().strip("<@!>")
-                    discord_id = int(raw) if raw.isdigit() else None
-                member, created = await store.upsert_member(db, gamertag, discord_id)
-                new_people += int(created)
+                    if raw.isdigit() and 15 <= len(raw) <= 25:   # a real snowflake
+                        discord_id = int(raw)
+                result = await store.upsert_member(db, gamertag, discord_id)
+                member = result.member
+                new_people += int(result.created)
+                if result.conflict:
+                    conflicts.append(result.conflict)
 
                 if plan.kind == "achievements":
                     hits = [key for col, key in plan.value_cols.items()
@@ -231,7 +244,13 @@ class DataIO(commands.Cog):
         if parsed:
             bits.append(f"⚔️ {parsed} parses")
         summary = " • ".join(bits)
-        await store.log_action(db, actor.id, str(actor), "import", summary)
+        if conflicts:
+            unique = list(dict.fromkeys(conflicts))
+            summary += (f"\n\n⚠️ {len(conflicts)} row(s) needed a decision and were left "
+                        "alone rather than overwriting somebody:\n"
+                        + "\n".join(f"• {c}" for c in unique[:8])
+                        + (f"\n• …and {len(unique) - 8} more" if len(unique) > 8 else ""))
+        await store.log_action(db, actor.id, str(actor), "import", summary.split("\n")[0])
         return summary
 
 

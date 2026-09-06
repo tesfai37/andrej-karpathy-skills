@@ -122,6 +122,7 @@ class Leaderboards(commands.Cog):
             FROM trials t
             JOIN achievements a ON a.trial_key = t.key AND a.kind = 'clear'
             LEFT JOIN member_achievements ma ON ma.achievement_key = a.key
+                 AND ma.member_id IN (SELECT id FROM members WHERE active = 1)
             GROUP BY t.key ORDER BY t.sort
             """)
         e = embeds.base(self.bot.brand, f"📈  {self.bot.brand.name} at a glance")

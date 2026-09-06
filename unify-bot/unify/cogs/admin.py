@@ -41,8 +41,8 @@ class Admin(commands.Cog):
     @admin_only()
     async def member_add(self, interaction: discord.Interaction, gamertag: str,
                          user: discord.Member | None = None):
-        member, created = await store.upsert_member(
-            self.bot.db, gamertag, user.id if user else None)
+        result = await store.upsert_member(self.bot.db, gamertag, user.id if user else None)
+        member, created = result.member, result.created
         entry = await store.log_action(
             self.bot.db, interaction.user.id, str(interaction.user), "member add",
             f"{member.gamertag}",
@@ -50,6 +50,11 @@ class Admin(commands.Cog):
         )
         await self.bot.audit(interaction.user, "member added" if created else "member updated",
                              member.gamertag, entry)
+        if result.conflict:
+            return await interaction.response.send_message(embed=embeds.warn(
+                f"**{member.gamertag}** is on the roster, but {result.conflict}.\n"
+                "Nothing was overwritten. Use `/member link` or `/member rename` if you "
+                "meant to move the account."))
         await interaction.response.send_message(embed=embeds.success(
             f"**{member.gamertag}** is {'now on' if created else 'already on'} the roster"
             + (f" and linked to {user.mention}." if user else ".")))
@@ -201,10 +206,17 @@ class Admin(commands.Cog):
         if await self.bot.db.one("SELECT 1 FROM trials WHERE key = ?", (key,)):
             return await interaction.response.send_message(
                 embed=embeds.error(f"`{key}` already exists."), ephemeral=True)
+        icon = embeds.as_emoji(emoji)
+        if emoji.strip() and icon is None:
+            return await interaction.response.send_message(
+                embed=embeds.error(
+                    f"`{emoji.strip()}` isn't an emoji I can use. Paste a real one "
+                    "(🐉) or one of your server's custom emoji, or leave it blank."),
+                ephemeral=True)
         top = await self.bot.db.val("SELECT COALESCE(MAX(sort),0) FROM trials WHERE key<>'account'", (), 0)
         await self.bot.db.run(
             "INSERT INTO trials(key, name, short, emoji, sort) VALUES(?,?,?,?,?)",
-            (key, name.strip(), short.strip(), emoji.strip(), top + 10))
+            (key, name.strip(), short.strip(), icon or "", top + 10))
         await self.bot.audit(interaction.user, "trial added", f"{short} ({key})")
         await interaction.response.send_message(embed=embeds.success(
             f"Added **{name}**. Now add its achievements with `/achievement new`."))
@@ -226,15 +238,22 @@ class Admin(commands.Cog):
         if await self.bot.db.one("SELECT 1 FROM achievements WHERE key = ?", (key,)):
             return await interaction.response.send_message(
                 embed=embeds.error(f"`{key}` already exists."), ephemeral=True)
+        if not await self.bot.db.one("SELECT 1 FROM trials WHERE key = ?", (trial,)):
+            return await interaction.response.send_message(
+                embed=embeds.error(f"`{trial}` isn't a trial. Add it with `/trial add` first."),
+                ephemeral=True)
+        wanted, unknown = await self.split_keys(requires)
         top = await self.bot.db.val(
             "SELECT COALESCE(MAX(sort),0) FROM achievements WHERE trial_key = ?", (trial,), 0)
         await self.bot.db.run(
             "INSERT INTO achievements(key, name, trial_key, kind, sort, requires) "
             "VALUES(?,?,?,?,?,?)",
-            (key, name.strip(), trial, kind.value, top + 1, requires.strip().lower()))
+            (key, name.strip(), trial, kind.value, top + 1, " ".join(wanted)))
         await self.bot.audit(interaction.user, "achievement added", f"{name} ({key})")
+        note = (f"\n\n⚠️ I ignored `{'`, `'.join(unknown)}` in **requires** - "
+                "no achievement has that code." if unknown else "")
         await interaction.response.send_message(embed=embeds.success(
-            f"Added **{name}**. Link a Discord role to it with `/map role`."))
+            f"Added **{name}**. Link a Discord role to it with `/map role`." + note))
 
     @ach_group.command(name="rename", description="Change how an achievement is displayed")
     @app_commands.autocomplete(achievement=autocomplete.achievements)

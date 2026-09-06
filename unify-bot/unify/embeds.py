@@ -12,6 +12,41 @@ FULL, EMPTY = "▰", "▱"
 TICK, CROSS = "✅", "⬜"
 KIND_ICON = {"clear": "🔹", "boss": "🔸", "hm": "🔥", "title": "🏅"}
 
+FIELD_LIMIT = 1024          # Discord's cap on an embed field value
+
+
+def as_emoji(text: str | None) -> str | None:
+    """Return `text` only if Discord will accept it as an emoji, else None.
+
+    Trials and achievements are editable from Discord, so somebody will
+    eventually type a word into an emoji box. Left unchecked that word is sent
+    as a unicode emoji name and the API rejects the whole message - which would
+    break /profile for the entire server."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = discord.PartialEmoji.from_str(text)
+    except Exception:
+        return None
+    if parsed.id is not None:               # custom server emoji, <:name:id>
+        return text
+    if any(c.isascii() and c.isalnum() for c in text) or len(text) > 8:
+        return None                          # a word, not an emoji
+    return text
+
+
+def lines_within(lines: list[str], limit: int = FIELD_LIMIT) -> str:
+    """Join as many lines as fit, then say how many were left out."""
+    out, used = [], 0
+    for i, line in enumerate(lines):
+        if used + len(line) + 1 > limit - 24:
+            out.append(f"…and {len(lines) - i} more")
+            break
+        out.append(line)
+        used += len(line) + 1
+    return "\n".join(out)
+
 
 @dataclass
 class Brand:
@@ -31,7 +66,7 @@ class Brand:
 def bar(done: int, total: int, width: int = 6) -> str:
     if total <= 0:
         return EMPTY * width
-    filled = round(width * done / total)
+    filled = min(width, round(width * done / total))
     if done and filled == 0:
         filled = 1
     return FULL * filled + EMPTY * (width - filled)
@@ -99,18 +134,19 @@ def profile_embed(
             f"**{r['done']}/{r['total']}**"
             for r in started
         ]
-        e.add_field(name="Progress", value="\n".join(lines), inline=False)
+        e.add_field(name="Progress", value=lines_within(lines), inline=False)
     else:
         e.add_field(name="Progress", value="_Nothing recorded yet._", inline=False)
 
     if untouched:
         e.add_field(
             name="Not started",
-            value=", ".join(r["short"] for r in untouched),
+            value=", ".join(r["short"] for r in untouched)[:FIELD_LIMIT],
             inline=False,
         )
     if member_titles:
-        e.add_field(name="🏅 Titles", value=" • ".join(member_titles), inline=False)
+        e.add_field(name="🏅 Titles",
+                    value=" • ".join(member_titles)[:FIELD_LIMIT], inline=False)
 
     e.set_footer(text=f"{brand.name} • use the menus below to switch role or open a trial")
     return e
@@ -126,10 +162,10 @@ def trial_embed(brand: Brand, gamertag: str, role: str, trial: dict, rows: list[
     )
     e.add_field(
         name="​",
-        value="\n".join(
+        value=lines_within([
             f"{TICK if r['have'] else CROSS} {KIND_ICON.get(r['kind'], '•')} {r['name']}"
             for r in rows
-        ) or "_No achievements configured for this trial._",
+        ]) or "_No achievements configured for this trial._",
         inline=False,
     )
     e.set_footer(text=brand.name)

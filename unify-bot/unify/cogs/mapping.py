@@ -72,7 +72,8 @@ class _TrialPicker(discord.ui.Select):
             placeholder="1) Which trial?",
             row=0,
             options=[
-                discord.SelectOption(label=t["name"], value=t["key"], emoji=t["emoji"] or None,
+                discord.SelectOption(label=t["name"][:100], value=t["key"],
+                                     emoji=embeds.as_emoji(t["emoji"]),
                                      default=t["key"] == current)
                 for t in trials[:25]
             ],
@@ -89,7 +90,8 @@ class _AchievementPicker(discord.ui.Select):
             placeholder="2) Which achievement?",
             row=1,
             options=[
-                discord.SelectOption(label=r["name"], value=r["key"], description=r["key"])
+                discord.SelectOption(label=r["name"][:100], value=r["key"],
+                                     description=r["key"])
                 for r in rows[:25]
             ],
         )

@@ -1,6 +1,7 @@
 """SQLite layer. One connection, WAL, plain helpers - no ORM needed at this size."""
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -109,6 +110,9 @@ class Database:
     def __init__(self, path: str):
         self.path = Path(path)
         self.conn: aiosqlite.Connection | None = None
+        # One connection is shared by every command, so writes take a turn each -
+        # otherwise two overlapping batches can commit half of each other's work.
+        self._writing = asyncio.Lock()
 
     async def connect(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,18 +136,21 @@ class Database:
             return await cur.fetchone()
 
     async def val(self, sql: str, args: Sequence[Any] = (), default: Any = None) -> Any:
+        """No row, or a NULL in the first column, both mean `default`."""
         row = await self.one(sql, args)
-        return row[0] if row else default
+        return default if row is None or row[0] is None else row[0]
 
     async def run(self, sql: str, args: Sequence[Any] = ()) -> aiosqlite.Cursor:
-        cur = await self.conn.execute(sql, args)
-        await self.conn.commit()
-        return cur
+        async with self._writing:
+            cur = await self.conn.execute(sql, args)
+            await self.conn.commit()
+            return cur
 
     async def run_many(self, statements: Iterable[tuple[str, Sequence[Any]]]) -> None:
-        for sql, args in statements:
-            await self.conn.execute(sql, args)
-        await self.conn.commit()
+        async with self._writing:
+            for sql, args in statements:
+                await self.conn.execute(sql, args)
+            await self.conn.commit()
 
     # --- settings -----------------------------------------------------------
     async def get_setting(self, key: str, default: Any = None) -> Any:

@@ -120,15 +120,20 @@ def cell_is_true(value) -> bool:
     return str(value or "").strip().lower() in TRUTHY
 
 
+NUMBER_RE = re.compile(r"([0-9]*\.?[0-9]+)\s*([km])?\s*(?:dps|score|pts?)?")
+
+
 def cell_number(value) -> int | None:
-    """Accepts 112000, "112,000", "112k", "1.2m" - all the ways scores get typed."""
-    text = str(value or "").strip().lower().replace(",", "").replace(" ", "")
+    """Accepts 112000, "112,000", "112k", "1.2m", "112k dps" - the ways scores
+    actually get typed - and refuses everything else.
+
+    It deliberately does not go digit-hunting inside prose: a stray notes column
+    reading "see notes 2024" must not import as a parse of 2024."""
+    text = ("" if value is None else str(value)).strip().lower().replace(",", "")
     if not text:
         return None
-    match = re.fullmatch(r"([0-9]*\.?[0-9]+)([km])?", text)
-    if match:
-        number = float(match.group(1))
-        number *= {"k": 1_000, "m": 1_000_000}.get(match.group(2), 1)
-        return int(number)
-    digits = re.sub(r"[^0-9]", "", text)
-    return int(digits) if digits else None
+    match = NUMBER_RE.fullmatch(text)
+    if match is None:
+        return None
+    number = float(match.group(1)) * {"k": 1_000, "m": 1_000_000}.get(match.group(2), 1)
+    return int(number)
