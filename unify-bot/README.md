@@ -32,7 +32,12 @@ Left menu → **OAuth2** → **URL Generator**:
 
 - **Scopes:** `bot`, `applications.commands`
 - **Bot permissions:** View Channels, Send Messages, Send Messages in Threads,
-  Embed Links, Attach Files, Read Message History, Add Reactions, Use External Emojis
+  Embed Links, Attach Files, Read Message History, Add Reactions, Use External Emojis,
+  **Manage Roles**
+
+  > Manage Roles is only needed for `/sync` (handing out earned roles). Everything
+  > else works without it. Discord also requires the bot's own role to sit **above**
+  > any role it hands out — `/sync check` tells you if it doesn't.
 
 Copy the URL at the bottom, open it, pick your server, **Authorise**.
 
@@ -201,6 +206,7 @@ correctly.
 | --- | --- |
 | `/me` | Your own achievement card |
 | `/profile` | Look somebody up — start typing, the list narrows as you go |
+| `/find` | Who has (and hasn't) cleared what — the group-building question |
 | `/leaderboard` | Points, achievements, scores or parses |
 | `/stats` | How the guild is doing overall |
 | `/score` · `/parse` | Somebody's numbers |
@@ -222,7 +228,62 @@ menus underneath switch role or open a single trial for the boss-by-boss list.
 | `/import` · `/export` | Spreadsheets in and out |
 | `/audit` | Every change, who made it, when |
 | `/undo` | Reverse the last change (or `/undo 42` for a specific one) |
+| `/sync check` · `all` · `member` | Hand out the Discord roles people have earned |
 | `/config show` · `set` · `channel` · `roles` | Settings |
+
+---
+
+## Building a group — `/find`
+
+The question every raid lead asks on a Tuesday:
+
+```
+/find  has: vsshm  missing: vssgodslayer  role: DPS
+```
+
+> *"Every DPS who has cleared Sunspire hard mode but hasn't got Godslayer yet."*
+
+- **has** — codes they must all have. Pick from the suggestions as you type; each
+  pick is added to the line rather than replacing it.
+- **missing** — codes they must *not* have yet
+- **role** — only count clears done as Tank / Healer / DPS
+- **min_parse** / **parse_label** — only people parsing above a number
+
+Results lead with the most experienced, and a **Copy as @mentions** button gives
+you the list as plain text you can paste into a ping. (It comes back in a code
+block, so nobody gets pinged by accident.)
+
+---
+
+## Giving out roles automatically — `/sync`
+
+Your Discord roles already say who has cleared what. Once mapping is done, the
+bot can keep them that way by itself: earn Godslayer, get the Godslayer role.
+
+It is **off** until you turn it on, because the first run can hand out a lot of
+roles at once:
+
+```
+/sync check     ← always start here
+/config set  key:role_sync  value:true
+/sync all       ← shows a preview and waits for you to confirm
+```
+
+`/sync check` tells you the two things that actually go wrong:
+
+1. Whether the bot has the **Manage Roles** permission
+2. Which achievement roles sit **above** the bot in Server Settings → Roles
+
+Discord will not let any bot hand out a role above its own. If `/sync check`
+lists roles as *out of reach*, drag the bot's role above them and run it again.
+
+After that, roles update by themselves whenever an achievement is recorded — from
+the submissions channel, from `/achievement give`, and they come back off if an
+achievement is removed. A bulk `/import` doesn't sync inline (that would be
+thousands of role changes at once); it reminds you to run `/sync all` instead.
+
+**Only roles that appear in `/map list` are ever touched.** Anything else a
+member has — raid roles, colour roles, pings — the bot leaves completely alone.
 
 ---
 
@@ -267,6 +328,7 @@ full HM `5`, title `10`.
 | `viewer_roles` | Who can look people up (empty = everyone) |
 | `submission_mode` | `auto` or `review` |
 | `notify_dm` | DM members when they earn something |
+| `role_sync` | Hand out Discord roles automatically when achievements are earned |
 | `report_day`, `report_hour` | Weekly report schedule (UTC, `off` to disable) |
 
 ---
@@ -305,6 +367,7 @@ unify/
   store.py               members, grants, scores, audit/undo
   parsing.py             reads an achievement post
   importer.py            reads a spreadsheet
+  rolesync.py            works out which Discord roles somebody should hold
   embeds.py  views.py    everything you see
   cogs/                  one file per area
   data/catalog.json      seed trials and achievements (edited in Discord after first run)

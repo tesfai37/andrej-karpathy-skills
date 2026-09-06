@@ -34,6 +34,8 @@ SETTING_DEFAULTS: dict[str, tuple[str, object, str]] = {
     "submission_mode":      ("choice:auto,review", "review",
                              "auto = record instantly, review = an admin presses Approve"),
     "notify_dm":            ("bool",    True, "DM a member when they earn something"),
+    "role_sync":            ("bool",    False,
+                             "Give members the matching Discord role when they earn an achievement"),
     "report_day":           ("choice:mon,tue,wed,thu,fri,sat,sun,off", "sun",
                              "Weekly report day (off = disabled)"),
     "report_hour":          ("int",     18, "Hour (0-23, UTC) the weekly report is posted"),

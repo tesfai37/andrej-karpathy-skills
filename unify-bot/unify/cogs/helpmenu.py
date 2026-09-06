@@ -13,7 +13,8 @@ QUICKSTART = (
     "Type `/profile` and start typing their gamertag — the list narrows as you type. "
     "Then use the menus on the card to switch role or open a trial.\n\n"
     "**Want your own card?** `/me`\n"
-    "**Who's on top?** `/leaderboard`\n\n"
+    "**Who's on top?** `/leaderboard`\n"
+    "**Building a group?** `/find has:vsshm missing:vssgodslayer role:DPS`\n\n"
     "Pick a section below for the full list."
 )
 
@@ -23,6 +24,7 @@ SECTIONS: list[tuple[str, str, bool, list[tuple[str, str]]]] = [
         ("/me", "Your own card"),
         ("/score", "Their trial scores"),
         ("/parse", "Their parse numbers"),
+        ("/find", "Who has (and hasn't) cleared what — for building a group"),
         ("/roster", "Everyone in the guild"),
     ]),
     ("Leaderboards", "📊", False, [
@@ -50,6 +52,9 @@ SECTIONS: list[tuple[str, str, bool, list[tuple[str, str]]]] = [
         ("/map role", "Map one role, guided, no typing"),
         ("/map list", "See every mapping"),
         ("/map missing", "Achievements that still need a role"),
+        ("/sync check", "Can I hand out your achievement roles?"),
+        ("/sync all", "Give everyone the roles they've earned"),
+        ("/sync member", "Fix one person's roles"),
         ("/config show", "Everything the bot is set to"),
         ("/config channel", "Point a setting at a channel"),
         ("/config roles", "Who counts as an admin or viewer"),

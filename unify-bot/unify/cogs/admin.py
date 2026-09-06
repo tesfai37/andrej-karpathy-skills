@@ -143,6 +143,8 @@ class Admin(commands.Cog):
         added = await store.grant(self.bot.db, target, role.value, keys,
                                   interaction.user.id, str(interaction.user))
         entry = await self.bot.db.val("SELECT MAX(id) FROM audit_log") if added else None
+        if added:
+            await self.bot.sync_roles(interaction.guild, target, "achievements given")
         await self.bot.audit(interaction.user, "achievements given",
                              f"{target.gamertag} [{role.value}] +{', '.join(added) or 'nothing'}",
                              entry)
@@ -164,6 +166,8 @@ class Admin(commands.Cog):
         removed = await store.revoke(self.bot.db, target, role.value, keys,
                                      interaction.user.id, str(interaction.user))
         entry = await self.bot.db.val("SELECT MAX(id) FROM audit_log") if removed else None
+        if removed:
+            await self.bot.sync_roles(interaction.guild, target, "achievements removed")
         await self.bot.audit(interaction.user, "achievements removed",
                              f"{target.gamertag} [{role.value}] -{', '.join(removed) or 'nothing'}",
                              entry)

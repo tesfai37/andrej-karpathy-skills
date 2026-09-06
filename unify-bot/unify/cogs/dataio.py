@@ -244,6 +244,8 @@ class DataIO(commands.Cog):
         if parsed:
             bits.append(f"⚔️ {parsed} parses")
         summary = " • ".join(bits)
+        if granted and await self.bot.setting("role_sync"):
+            summary += "\n\n🔗 Run `/sync all` to hand out the Discord roles for these."
         if conflicts:
             unique = list(dict.fromkeys(conflicts))
             summary += (f"\n\n⚠️ {len(conflicts)} row(s) needed a decision and were left "

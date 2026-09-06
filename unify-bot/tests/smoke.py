@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from unify import embeds, importer, parsing, store  # noqa: E402
+from unify import embeds, importer, parsing, rolesync, store  # noqa: E402
 from unify.bot import COGS, UnifyBot  # noqa: E402
 from unify.config import Env  # noqa: E402
 from unify.db import Database  # noqa: E402
@@ -54,8 +54,10 @@ async def test_command_tree() -> None:
             if hasattr(c, "commands") for s in c.commands
         }
         check(f"{len(names)} top-level commands registered", len(names) >= 12, ", ".join(names))
+        check("/find is registered", "find" in names)
         for expected in ("/map auto", "/member add", "/achievement give", "/record score",
-                         "/config show", "/trial add"):
+                         "/config show", "/trial add",
+                         "/sync all", "/sync member", "/sync check"):
             check(f"{expected} exists", expected in subs)
         for cog in reversed(COGS):        # stops the reports loop the cog started
             await bot.unload_extension(cog)
@@ -265,6 +267,149 @@ async def test_display_limits() -> None:
     check("a 60-achievement trial page stays inside its limits",
           all(len(f.value) <= 1024 for f in e.fields) and len(e) <= 6000)
 
+
+# --- just enough of discord.Guild to exercise the role-sync arithmetic -------
+class FakeRole:
+    def __init__(self, rid, name, position, managed=False):
+        self.id, self.name, self.position, self.managed = rid, name, position, managed
+        self.mention = f"<@&{rid}>"
+
+    def __lt__(self, other):
+        return self.position < other.position
+
+    def is_default(self):
+        return self.position == 0
+
+    def __repr__(self):
+        return self.name
+
+
+class FakePerms:
+    def __init__(self, manage_roles=True):
+        self.manage_roles = manage_roles
+
+
+class FakePerson:
+    def __init__(self, roles, manage_roles=True):
+        self.roles = roles
+        self.guild_permissions = FakePerms(manage_roles)
+
+    @property
+    def top_role(self):
+        return max(self.roles, key=lambda r: r.position)
+
+
+class FakeGuild:
+    def __init__(self, roles, people, me):
+        self._roles = {r.id: r for r in roles}
+        self._people = people
+        self.me = me
+
+    def get_role(self, rid):
+        return self._roles.get(rid)
+
+    def get_member(self, uid):
+        return self._people.get(uid)
+
+
+async def test_role_sync() -> None:
+    print("\nrole sync")
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        vss = FakeRole(10, "vSS", 5)
+        vsshm = FakeRole(11, "vSS HM", 6)
+        godslayer = FakeRole(12, "Godslayer", 7)
+        too_high = FakeRole(13, "vKA HM", 99)
+        unrelated = FakeRole(14, "Raider", 4)
+        bot_role = FakeRole(99, "Unify Bot", 50)
+
+        await db.run_many([
+            ("INSERT INTO role_map(discord_role_id, kind, value, label) VALUES(?,?,?,?)", row)
+            for row in [(10, "achievement", "vss", "vSS"),
+                        (11, "achievement", "vsshm", "vSS HM"),
+                        (12, "achievement", "vssgodslayer", "Godslayer"),
+                        (13, "achievement", "vkahm", "vKA HM")]
+        ])
+
+        member = await store.create_member(db, "BUDMAN008", 4001)
+        # they hold an unrelated role plus a stale Godslayer they never earned
+        person = FakePerson([unrelated, godslayer])
+        me = FakePerson([bot_role])
+        guild = FakeGuild([vss, vsshm, godslayer, too_high, unrelated, bot_role],
+                          {4001: person}, me)
+
+        await store.grant(db, member, "dps", ["vsshm"], 1, "tester")   # -> vss + vsshm
+        plan = await rolesync.plan_member(db, guild, member)
+        check("earned roles are queued to add",
+              {r.name for r in plan.add} == {"vSS", "vSS HM"}, str(plan.add))
+        check("a role they no longer qualify for is queued to remove",
+              [r.name for r in plan.remove] == ["Godslayer"], str(plan.remove))
+        check("a role the bot never mapped is left alone",
+              unrelated not in plan.add and unrelated not in plan.remove)
+
+        await store.grant(db, member, "dps", ["vkahm"], 1, "tester")
+        plan = await rolesync.plan_member(db, guild, member)
+        check("a role above the bot is reported, not attempted",
+              [r.name for r in plan.blocked] == ["vKA HM"] and too_high not in plan.add)
+
+        no_perm = FakeGuild([vss, bot_role], {4001: FakePerson([unrelated])},
+                            FakePerson([bot_role], manage_roles=False))
+        plan = await rolesync.plan_member(db, no_perm, member)
+        check("without Manage Roles nothing is attempted", plan.add == [] and plan.blocked)
+
+        unlinked = await store.create_member(db, "NOTLINKED", None)
+        check("an unlinked member is skipped with a reason",
+              (await rolesync.plan_member(db, guild, unlinked)).skipped == "no Discord account linked")
+        gone = await store.create_member(db, "LEFT", 9999)
+        check("somebody who left the server is skipped",
+              (await rolesync.plan_member(db, guild, gone)).skipped == "not in the server")
+        await db.close()
+
+
+async def test_find() -> None:
+    print("\nfind")
+    from unify.cogs.find import Find
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        cog = Find(type("Shim", (), {"db": db})())
+
+        ace = await store.create_member(db, "ACE", 1)
+        rook = await store.create_member(db, "ROOK", 2)
+        healer = await store.create_member(db, "MENDER", 3)
+        await store.create_member(db, "BENCHED", 4)
+
+        await store.grant(db, ace, "dps", ["vssgodslayer"], 1, "t")     # everything vSS
+        await store.grant(db, rook, "dps", ["vsshm"], 1, "t")           # vSS HM, no title
+        await store.grant(db, healer, "healer", ["vsshm"], 1, "t")      # as a healer
+        await store.set_parse(db, ace, "3m dummy", 118_000, 1, "t")
+        await store.set_parse(db, rook, "3m dummy", 92_000, 1, "t")
+
+        async def names(**kw):
+            kw.setdefault("has", []); kw.setdefault("missing", [])
+            kw.setdefault("role", None); kw.setdefault("min_parse", None)
+            kw.setdefault("parse_label", None)
+            return [r["gamertag"] for r in await cog.search(**kw)]
+
+        check("has: finds everyone with the clear",
+              sorted(await names(has=["vsshm"])) == ["ACE", "MENDER", "ROOK"])
+        check("role: narrows to how it was cleared",
+              sorted(await names(has=["vsshm"], role="dps")) == ["ACE", "ROOK"])
+        check("missing: the actual raid-building question",
+              await names(has=["vsshm"], missing=["vssgodslayer"], role="dps") == ["ROOK"])
+        check("min_parse filters on numbers",
+              await names(has=["vsshm"], min_parse=100_000) == ["ACE"])
+        check("parse_label scopes the number",
+              await names(min_parse=90_000, parse_label="nonexistent") == [])
+        check("results lead with the most experienced",
+              await names(has=["vss"], role="dps") == ["ACE", "ROOK"])
+        check("nobody on the bench sneaks in", "BENCHED" not in await names(has=["vss"]))
+
+        good, bad = await cog.validate("vsshm nonsense vkahm")
+        check("unknown codes are rejected, known ones kept",
+              good == ["vsshm", "vkahm"] and bad == ["nonsense"])
+        await db.close()
+
 async def main() -> None:
     await test_command_tree()
     await test_prerequisites()
@@ -272,6 +417,8 @@ async def main() -> None:
     await test_import()
     await test_identity_safety()
     await test_display_limits()
+    await test_role_sync()
+    await test_find()
     print()
     if failures:
         print(f"{len(failures)} check(s) failed: {', '.join(failures)}")

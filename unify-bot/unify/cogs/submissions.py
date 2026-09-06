@@ -59,7 +59,7 @@ class SubmissionView(discord.ui.View):
             return await interaction.response.send_message(
                 embed=embeds.warn("Pick the role from the menu first."), ephemeral=True)
         cog: Submissions = self.bot.get_cog("Submissions")
-        added = await cog.apply(row, interaction.user)
+        added = await cog.apply(row, interaction.user, interaction.guild)
         await self.bot.db.run("UPDATE pending_submissions SET status='approved' WHERE id=?",
                               (row["id"],))
         member = await store.get_member(self.bot.db, row["member_id"])
@@ -184,7 +184,7 @@ class Submissions(commands.Cog):
         if role and mode == "auto":
             row = {"member_id": member.id, "role": role, "keys": json.dumps(parsed.keys),
                    "source_url": message.jump_url}
-            added = await self.apply(row, message.author)
+            added = await self.apply(row, message.author, message.guild)
             await message.add_reaction("✅")
             await message.reply(
                 embed=embeds.success(
@@ -235,7 +235,7 @@ class Submissions(commands.Cog):
         await message.add_reaction("⏳")
 
     # ------------------------------------------------------------------ apply
-    async def apply(self, row, actor: discord.abc.User) -> list[str]:
+    async def apply(self, row, actor: discord.abc.User, guild: discord.Guild) -> list[str]:
         db = self.bot.db
         member = await store.get_member(db, row["member_id"])
         keys = json.loads(row["keys"])
@@ -244,6 +244,7 @@ class Submissions(commands.Cog):
             await self.bot.audit(
                 actor, "achievements recorded",
                 f"{member.gamertag} [{row['role']}] +{', '.join(added)}")
+            await self.bot.sync_roles(guild, member, f"earned {', '.join(added)}")
             await self.notify(member, row["role"], added)
         return added
 

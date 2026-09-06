@@ -62,3 +62,28 @@ async def settings_keys(interaction: discord.Interaction, current: str) -> list[
         for k, meta in SETTING_DEFAULTS.items()
         if current.lower() in k.lower()
     ][:25]
+
+
+async def achievement_list(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """Autocomplete for options that take several codes at once.
+
+    Completes the last word and hands back the whole string, so picking three
+    achievements in a row builds "vsshm vkahm vrghm" instead of replacing it."""
+    prefix, _, tail = current.rpartition(" ")
+    rows = await interaction.client.db.all(
+        """
+        SELECT a.key, a.name, t.short FROM achievements a
+        JOIN trials t ON t.key = a.trial_key
+        WHERE a.key LIKE ? OR a.name LIKE ? OR t.short LIKE ?
+        ORDER BY t.sort, a.sort LIMIT 25
+        """,
+        (f"%{tail}%", f"%{tail}%", f"%{tail}%"),
+    )
+    out = []
+    for r in rows:
+        value = f"{prefix} {r['key']}".strip()
+        if len(value) > 100:
+            continue
+        out.append(app_commands.Choice(name=f"{value}  ({r['short']} {r['name']})"[:100],
+                                       value=value))
+    return out

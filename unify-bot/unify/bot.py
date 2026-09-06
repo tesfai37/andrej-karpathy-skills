@@ -8,7 +8,7 @@ from pathlib import Path
 import discord
 from discord.ext import commands
 
-from . import embeds
+from . import embeds, rolesync
 from .checks import NotAllowed
 from .config import Env, SETTING_DEFAULTS
 from .db import Database
@@ -17,8 +17,10 @@ log = logging.getLogger("unify")
 
 COGS = (
     "unify.cogs.profiles",
+    "unify.cogs.find",
     "unify.cogs.leaderboards",
     "unify.cogs.mapping",
+    "unify.cogs.sync",
     "unify.cogs.submissions",
     "unify.cogs.admin",
     "unify.cogs.dataio",
@@ -80,6 +82,17 @@ class UnifyBot(commands.Bot):
             await self.setting("brand_color"),
             await self.setting("logo_url"),
         )
+
+    async def sync_roles(self, guild: discord.Guild | None, member, reason: str) -> None:
+        """Give (or take back) the Discord roles that match somebody's record.
+        Quietly does nothing unless an admin has turned role_sync on."""
+        if guild is None or not await self.setting("role_sync"):
+            return
+        plan = await rolesync.plan_member(self.db, guild, member)
+        if plan.changes:
+            problem = await rolesync.apply_plan(guild, plan, reason)
+            if problem:
+                log.warning("role sync for %s: %s", member.gamertag, problem)
 
     async def audit(self, actor: discord.abc.User, action: str, summary: str,
                     entry_id: int | None = None) -> None:
