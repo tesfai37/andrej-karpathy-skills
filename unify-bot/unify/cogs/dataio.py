@@ -187,7 +187,7 @@ class DataIO(commands.Cog):
                 stack.extend(catalog[key]["requires"].split())
             return out
 
-        new_people = granted = scored = parsed = 0
+        new_people = granted = scored = parsed = legacy = 0
         unreadable: collections.Counter = collections.Counter()
         conflicts: list[str] = []
         statements: list[tuple[str, tuple]] = []
@@ -227,6 +227,7 @@ class DataIO(commands.Cog):
                             "VALUES(?,?,?,?,?)",
                             (member.id, plan.role, key, marks.get(key, "X"), actor.id)))
                         granted += 1
+                        legacy += int(marks.get(key) == "L")
                 elif plan.kind == "scores":
                     for col, trial_key in plan.value_cols.items():
                         value = importer.cell_number(row[col]) if col < len(row) else None
@@ -254,11 +255,9 @@ class DataIO(commands.Cog):
             bits.append(f"🏆 {scored} scores")
         if parsed:
             bits.append(f"⚔️ {parsed} parses")
-        marks = await db.val(
-            "SELECT COUNT(*) FROM member_achievements WHERE mark = 'L'", (), 0)
-        if marks:
+        if legacy:
             label = await self.bot.setting("mark_label")
-            bits.append(f"🅛 {marks} marked {label}")
+            bits.append(f"🅛 {legacy} {label.lower()}")
         summary = " • ".join(bits)
         if unreadable:
             shown = ", ".join(f"`{v}` ×{n}" for v, n in unreadable.most_common(6))

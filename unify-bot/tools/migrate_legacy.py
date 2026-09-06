@@ -103,9 +103,14 @@ async def migrate(old_path: str, new_path: str) -> None:
             for i, key in value_cols.items():
                 mark = cell_mark(row[i])
                 if mark:
-                    if marks.get((mid, key), mark) != mark:
-                        stats["disagreements"] += 1     # duplicate rows, different marks
-                    marks.setdefault((mid, key), mark)
+                    seen = marks.get((mid, key))
+                    if seen is not None and seen != mark:
+                        # Duplicate rows for one gamertag disagreeing. A plain X is a
+                        # clear recorded since achievements went account-wide, so it
+                        # is better information than the legacy L for the same cell.
+                        stats["disagreements"] += 1
+                    if seen is None or (seen == "L" and mark == "X"):
+                        marks[(mid, key)] = mark
                 elif not cell_is_blank(row[i]):
                     stats["unreadable"][str(row[i]).strip()] += 1
         await db.run_many([
@@ -194,7 +199,7 @@ async def migrate(old_path: str, new_path: str) -> None:
               f"were merged into one member each.")
         if stats["disagreements"]:
             print(f"  {stats['disagreements']} of those cells disagreed between rows "
-                  f"(one said X, another L) - the first was kept.")
+                  f"(one said X, another L) - the X was kept, being the newer record.")
     if stats["unreadable"]:
         print("\nCells that weren't X, L or blank (skipped, never guessed at):")
         for value, n in stats["unreadable"].most_common(10):

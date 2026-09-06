@@ -17,7 +17,7 @@ ROLE_SHEETS = {
     "awa": "account", "account": "account", "accountwide": "account",
 }
 CLEARED = {"x", "yes", "y", "true", "1", "✓", "✅", "done"}
-SECOND_MARK = "l"          # the guild's other marker, kept as-is rather than dropped
+SECOND_MARK = "l"          # "legacy": recorded before ESO made achievements account-wide
 BLANK = {"", "-", "–", "—", "n/a", "na", "no", "0", "none"}
 
 
@@ -119,7 +119,7 @@ def plan_sheet(name: str, headers: list[str], rows: list[list],
 
 
 def cell_mark(value) -> str | None:
-    """'X' if the cell says cleared, 'L' for the second marker, None for blank.
+    """'X' if the cell says cleared, 'L' for a legacy record, None for blank.
 
     Anything else - a note somebody typed into an achievement column - comes back
     as None and gets counted separately, so it is reported rather than guessed at."""

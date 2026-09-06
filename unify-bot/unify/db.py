@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS member_achievements (
     member_id       INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
     role            TEXT NOT NULL,            -- tank | healer | dps | account
     achievement_key TEXT NOT NULL REFERENCES achievements(key) ON DELETE CASCADE,
-    mark            TEXT NOT NULL DEFAULT 'X',   -- 'X' cleared, 'L' the guild's second marker
+    mark            TEXT NOT NULL DEFAULT 'X',   -- 'X' cleared, 'L' legacy (pre account-wide)
     granted_at      TEXT NOT NULL DEFAULT (datetime('now')),
     granted_by      INTEGER,
     PRIMARY KEY (member_id, role, achievement_key)

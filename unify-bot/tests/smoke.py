@@ -414,8 +414,11 @@ async def test_find() -> None:
 async def test_marks_and_formats() -> None:
     """The guild's sheet uses a second marker and its own number style."""
     print("\nreal-world data quirks")
+    from unify.config import SETTING_DEFAULTS
     check("X is a clear", importer.cell_mark("X") == "X")
     check("L is kept as its own marker", importer.cell_mark("l") == "L")
+    check("the marker is named Legacy out of the box",
+          SETTING_DEFAULTS["mark_label"][1] == "Legacy")
     check("both markers count as 'they have it'",
           importer.cell_is_true("X") and importer.cell_is_true("L"))
     check("notes typed into a cell are neither",
@@ -431,17 +434,17 @@ async def test_marks_and_formats() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         db = await fresh_db(f"{tmp}/t.sqlite3")
-        member = await store.create_member(db, "LEADER", 1)
+        member = await store.create_member(db, "OLDTIMER", 1)
         await store.grant(db, member, "dps", ["vmol"], 1, "t", mark="L")
         rows = await store.trial_detail(db, member.id, "dps", "vmol")
         check("the marker survives into the trial view",
               [r["mark"] for r in rows if r["have"]] == ["L"])
         check("a marked achievement still counts as held",
               "vmol" in await store.owned(db, member.id, "dps"))
-        e = embeds.trial_embed(embeds.Brand(), "LEADER", "dps",
-                               {"emoji": "🌑", "name": "Maw"}, rows, "Lead")
+        e = embeds.trial_embed(embeds.Brand(), "OLDTIMER", "dps",
+                               {"emoji": "🌑", "name": "Maw"}, rows, "Legacy")
         check("the trial page shows the marker and explains it",
-              embeds.MARK in e.fields[0].value and "Lead" in e.footer.text)
+              embeds.MARK in e.fields[0].value and "Legacy" in e.footer.text)
         await db.close()
 
 

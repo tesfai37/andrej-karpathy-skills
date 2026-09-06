@@ -91,12 +91,12 @@ class Find(commands.Cog):
         role="Only count clears done as this role",
         min_parse="Only members parsing at least this",
         parse_label="…on this specific parse, e.g. 'Arcanist'",
-        marked="Only count the X marks, or only the L marks",
+        marked="Only count normal clears, or only the older legacy records",
     )
     @app_commands.choices(
         role=[app_commands.Choice(name=ROLE_LABEL[r], value=r) for r in ROLES],
-        marked=[app_commands.Choice(name="Cleared it (X)", value="X"),
-                app_commands.Choice(name="Marked L on it", value="L")])
+        marked=[app_commands.Choice(name="Cleared (X)", value="X"),
+                app_commands.Choice(name="Legacy record (L) — pre account-wide", value="L")])
     @app_commands.autocomplete(has=autocomplete.achievement_list,
                                missing=autocomplete.achievement_list,
                                parse_label=autocomplete.parse_labels)

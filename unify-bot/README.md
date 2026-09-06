@@ -189,26 +189,35 @@ It never touches the old file, and it reports rather than guesses:
 - **Unknown columns** are listed at the end.
 - **CP builds, links and setups** come across into `/guide`.
 
+Check it yourself afterwards — this reconciles every cell in the source against
+the migrated rows and is read-only on both files:
+
+```bash
+python tools/verify_migration.py /path/to/old/database.db data/unify.sqlite3
+```
+
 Nobody is linked to a Discord account by the migration, because the old file
 stored display names (`crow.man`, `A Sly Man#9733`) rather than account ids.
 Run **`/member match`** afterwards — it looks every saved name up against your
 server and links the exact, unambiguous matches in one confirmed batch.
 
-### The `L` marker
+### The `L` marker — legacy records
 
-About 25,000 cells in the old sheet say `L` instead of `X`. The bot keeps them
-as a separate mark rather than guessing what they mean:
+About 25,000 cells in the old sheet say `L` instead of `X`. **`L` means the
+achievement was earned before ESO made achievements account-wide** (Update 33,
+March 2022) — back when a clear belonged to one character rather than the whole
+account. The data agrees: `L` stops dead at Dreadsail Reef, the first trial
+released after that change, and never appears alongside `X` inside one member's
+trial.
 
-- they count as "has this achievement" everywhere — profiles, `/find`, leaderboards
-- the trial breakdown shows them as 🅛 instead of ✅
-- `/find marked:` can filter on one or the other
-- `/config set key:mark_label value:…` names them, and that name appears on profiles
+They are real clears, so the bot treats them as such:
 
-The pattern in your data: `L` never appears on vDSR, vSE, vLC or vOC, and within
-any one member's trial it is never mixed with `X` — which looks like a recording
-convention that changed around the time Dreadsail Reef came out. **Tell me what
-it meant and I'll label it properly.** If it simply meant "cleared" under the old
-convention, everything already behaves correctly.
+- they count as "has this achievement" everywhere — profiles, `/find`,
+  leaderboards, prerequisite chains
+- the trial breakdown shows them as 🅛 rather than ✅, with the label in the footer
+- `/find marked:` filters on one or the other, so you can ask for people whose
+  record is a modern verified clear
+- `/config set key:mark_label value:…` renames them (default **Legacy**)
 
 ### Numbers
 
@@ -432,5 +441,6 @@ unify/
   cogs/                  one file per area
   data/catalog.json      seed trials and achievements (edited in Discord after first run)
 tools/migrate_legacy.py  old database.db -> new schema
+tools/verify_migration.py  proves the migration lost nothing
 tests/smoke.py           offline checks
 ```

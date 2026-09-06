@@ -152,7 +152,7 @@ async def owned(db: Database, member_id: int, role: str) -> set[str]:
 
 async def grant(
     db: Database, member: Member, role: str, keys: Sequence[str], actor_id: int, actor_name: str,
-    mark: str = "X",
+    mark: str = "X",     # 'L' marks a legacy, pre-account-wide record
 ) -> list[str]:
     """Grants keys plus their prerequisites. Returns only what was actually new."""
     wanted = await expand_prerequisites(db, keys)
