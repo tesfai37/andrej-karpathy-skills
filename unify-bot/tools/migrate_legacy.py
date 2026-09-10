@@ -76,7 +76,7 @@ async def migrate(old_path: str, new_path: str) -> None:
         return existing
 
     stats = {"members": 0, "achievements": 0, "marked": 0, "scores": 0, "parses": 0,
-             "disagreements": 0,
+             "disagreements": 0, "gaps": 0,
              "unknown_columns": set(), "unreadable": collections.Counter()}
 
     for table, role in ROLE_TABLES.items():
@@ -186,6 +186,19 @@ async def migrate(old_path: str, new_path: str) -> None:
         guides += len(statements)
         print(f"  {table}: {len(statements)} guide entries")
 
+    # A sheet that ticks a hard mode without its bosses is internally inconsistent.
+    # The migration copies it faithfully rather than inventing clears, but says so -
+    # /import and /achievement give both fill prerequisites in.
+    catalog = {r["key"]: r["requires"].split() for r in await db.all(
+        "SELECT key, requires FROM achievements")}
+    held: dict[tuple, set] = {}
+    for member_row, role, key in await db.all(
+            "SELECT member_id, role, achievement_key FROM member_achievements"):
+        held.setdefault((member_row, role), set()).add(key)
+    stats["gaps"] = sum(
+        1 for keys in held.values() for k in keys
+        for pre in catalog.get(k, []) if pre not in keys)
+
     stats["members"] = await db.val("SELECT COUNT(*) FROM members", (), 0)
     await db.close()
     old.close()
@@ -200,6 +213,9 @@ async def migrate(old_path: str, new_path: str) -> None:
         if stats["disagreements"]:
             print(f"  {stats['disagreements']} of those cells disagreed between rows "
                   f"(one said X, another L) - the X was kept, being the newer record.")
+    if stats["gaps"]:
+        print(f"\n{stats['gaps']} record(s) tick a hard mode without the bosses it needs. "
+              f"Copied as-is;\n/achievement give or a re-import will fill the gaps.")
     if stats["unreadable"]:
         print("\nCells that weren't X, L or blank (skipped, never guessed at):")
         for value, n in stats["unreadable"].most_common(10):

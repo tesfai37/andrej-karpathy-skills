@@ -78,11 +78,23 @@ def plan_sheet(name: str, headers: list[str], rows: list[list],
         elif plan.discord_col < 0 and "discord" in h:
             plan.discord_col = i
 
+    sheet_key = normalize(name)
+    if sheet_key.startswith("guide"):
+        wanted = {"category": -1, "topic": -1, "body": -1}
+        for i, h in enumerate(norm):
+            if h in wanted and wanted[h] < 0:
+                wanted[h] = i
+        if min(wanted.values()) < 0:
+            plan.kind, plan.reason = "skip", "needs category, topic and body columns"
+        else:
+            plan.kind = "guides"
+            plan.value_cols = {v: k for k, v in wanted.items()}
+        return plan
+
     if plan.gamertag_col < 0:
         plan.reason = "no GamerTag column"
         return plan
 
-    sheet_key = normalize(name)
     if sheet_key.startswith("score"):
         plan.kind = "scores"
         plan.value_cols = {i: h for i, h in enumerate(norm) if h in trial_keys}

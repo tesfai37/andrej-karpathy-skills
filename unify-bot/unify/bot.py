@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from . import embeds, rolesync
@@ -55,6 +56,8 @@ class UnifyBot(commands.Bot):
             await self.load_extension(cog)
 
         self.tree.on_error = self.on_tree_error
+        self.restrict_to_guilds()
+
         if self.env.guild_id:
             guild = discord.Object(id=self.env.guild_id)
             self.tree.copy_global_to(guild=guild)
@@ -62,6 +65,19 @@ class UnifyBot(commands.Bot):
         else:
             await self.tree.sync()
         log.info("commands synced")
+
+    def restrict_to_guilds(self) -> None:
+        """Every command reads guild state - roles, members, channels. Without
+        this a global sync makes them all invocable in a DM, where
+        interaction.guild is None and they raise instead of answering.
+
+        NB: app_commands.AppCommandContext, not discord.AppCommandContext - the
+        latter is an unrelated flags class of the same name that the payload
+        builder raises on."""
+        guild_only = app_commands.AppCommandContext(
+            guild=True, dm_channel=False, private_channel=False)
+        for command in self.tree.get_commands():
+            command.allowed_contexts = guild_only
 
     async def close(self) -> None:
         await self.db.close()

@@ -241,8 +241,26 @@ column, a `DiscordName` column, and `X` in an achievement column. `Score` and
 `Parse` sheets are picked up too — `112k`, `98,400` and `1.2m` all parse
 correctly.
 
-> A bulk import is **not** covered by `/undo`. Run `/export` first if you want a
-> restore point.
+> A bulk import is **not** covered by `/undo`. Take an `/export` first if you
+> want a restore point.
+
+### Backups
+
+`/export` gives you three shapes, and they are not interchangeable:
+
+| Format | What it is |
+| --- | --- |
+| **Excel workbook** | The layout you already know — a sheet per role, `X` and `L` cells, plus Score, Parse and your `/guide` entries. This is the one `/import` reads back, so it is a working restore. |
+| **CSV files** | A raw dump of every table, one file per table, zipped. For looking at, not for restoring. |
+| **Raw database** | The live `.sqlite3` file. The most complete backup — stop the bot, drop it in place of `data/unify.sqlite3`, start again. |
+
+The workbook round trip is covered by the test suite: export a database, read it
+back into an empty one, and confirm the members, clears, legacy marks, Discord
+links, scores, parses and guides all come back.
+
+One thing changes on a re-import, by design: if a record ticks a hard mode
+without the bosses it needs, the import fills those in. Your current file has
+506 of them.
 
 ---
 

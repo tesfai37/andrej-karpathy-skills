@@ -267,6 +267,11 @@ async def test_display_limits() -> None:
     check("a 60-achievement trial page stays inside its limits",
           all(len(f.value) <= 1024 for f in e.fields) and len(e) <= 6000)
 
+    one_long = ", ".join(f"`topic-{i:03d}`" for i in range(90))
+    packed = embeds.lines_within([one_long])
+    check("one over-long line is trimmed, not thrown away",
+          "topic-000" in packed and len(packed) <= 1024, repr(packed[:40]))
+
 
 # --- just enough of discord.Guild to exercise the role-sync arithmetic -------
 class FakeRole:
@@ -460,6 +465,102 @@ async def test_name_matching() -> None:
     check("a four-digit name is not mistaken for a discriminator",
           strip_discriminator("1234") == "1234")
 
+
+async def test_guild_only() -> None:
+    """Commands read guild state, so a DM must never reach them."""
+    print("\ncommands are guild-only")
+    with tempfile.TemporaryDirectory() as tmp:
+        bot = UnifyBot(Env(token="x", guild_id=0, db_path=f"{tmp}/t.sqlite3"))
+        await bot.db.connect()
+        await bot.db.seed_catalog(CATALOG)
+        for cog in COGS:
+            await bot.load_extension(cog)
+        bot.restrict_to_guilds()
+        top = bot.tree.get_commands()
+        check("every command refuses DMs",
+              all(c.allowed_contexts and c.allowed_contexts.guild
+                  and not c.allowed_contexts.dm_channel
+                  and not c.allowed_contexts.private_channel for c in top),
+              f"{len(top)} commands")
+        # the payload builder is fussy about which AppCommandContext class it gets
+        contexts = {tuple(c.to_dict(bot.tree).get("contexts") or ()) for c in top}
+        check("the sync payload builds and says guild-only", contexts == {(0,)}, str(contexts))
+        for cog in reversed(COGS):
+            await bot.unload_extension(cog)
+        await bot.db.close()
+
+
+async def test_export_round_trip() -> None:
+    """A backup has to restore. Export the database, read it back into an empty
+    one, and compare - this is what caught the reference sheets colliding with
+    the importer's own sheet names."""
+    print("\nexport survives a round trip")
+    from unify.cogs.dataio import DataIO
+
+    class Shim:
+        def __init__(self, db):
+            self.db, self.brand = db, embeds.Brand()
+
+        async def setting(self, key):
+            return {"role_sync": False, "mark_label": "Legacy"}[key]
+
+    class Actor:
+        id = 1
+
+        def __str__(self):
+            return "tester"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        src = await fresh_db(f"{tmp}/src.sqlite3")
+        ace = await store.create_member(src, "ACE", 700000000000000001)
+        rook = await store.create_member(src, "ROOK", None)
+        await store.grant(src, ace, "dps", ["godslayer"], 1, "t")
+        await store.grant(src, ace, "tank", ["vmol"], 1, "t", mark="L")
+        await store.grant(src, rook, "healer", ["extinguisher"], 1, "t")
+        await store.set_score(src, ace, "vss", 257_498, 1, "t")
+        await store.set_parse(src, ace, "Arcanist", 118_000, 1, "t")
+        await src.run("INSERT INTO guides(category, topic, body) VALUES('cp','tank','64 Blessed')")
+
+        before = await census(src)
+        workbook = (await DataIO(Shim(src)).build_export("xlsx")).fp.read()
+        await src.close()
+
+        dst = await fresh_db(f"{tmp}/dst.sqlite3")
+        sheets = importer.read_file(workbook, "unify.xlsx")
+        keys = {r[0] for r in await dst.all("SELECT key FROM achievements")}
+        trials = {r[0] for r in await dst.all("SELECT key FROM trials")}
+        plans = [importer.plan_sheet(n, h, r, keys, trials) for n, (h, r) in sheets.items()]
+        await DataIO(Shim(dst)).apply(sheets, [p for p in plans if p.kind != "skip"], Actor())
+        after = await census(dst)
+
+        check("members come back", after["members"] == before["members"])
+        check("normal clears come back", after["ach_X"] == before["ach_X"],
+              f"{before['ach_X']} -> {after['ach_X']}")
+        check("legacy marks survive the round trip", after["ach_L"] == before["ach_L"],
+              f"{before['ach_L']} -> {after['ach_L']}")
+        check("the Discord link survives", after["linked"] == before["linked"])
+        check("scores come back exactly", after["score_sum"] == before["score_sum"])
+        check("parses are not duplicated by the reference sheets",
+              after["parses"] == before["parses"], f"{before['parses']} -> {after['parses']}")
+        check("guide entries come back", after["guides"] == before["guides"],
+              f"{before['guides']} -> {after['guides']}")
+        await dst.close()
+
+
+async def census(db) -> dict[str, int]:
+    return {
+        "members": await db.val("SELECT COUNT(*) FROM members", (), 0),
+        "linked": await db.val(
+            "SELECT COUNT(*) FROM members WHERE discord_id IS NOT NULL", (), 0),
+        "ach_X": await db.val(
+            "SELECT COUNT(*) FROM member_achievements WHERE mark='X'", (), 0),
+        "ach_L": await db.val(
+            "SELECT COUNT(*) FROM member_achievements WHERE mark='L'", (), 0),
+        "score_sum": await db.val("SELECT COALESCE(SUM(score),0) FROM scores", (), 0),
+        "parses": await db.val("SELECT COUNT(*) FROM parses", (), 0),
+        "guides": await db.val("SELECT COUNT(*) FROM guides", (), 0),
+    }
+
 async def main() -> None:
     await test_command_tree()
     await test_prerequisites()
@@ -471,6 +572,8 @@ async def main() -> None:
     await test_find()
     await test_marks_and_formats()
     await test_name_matching()
+    await test_guild_only()
+    await test_export_round_trip()
     print()
     if failures:
         print(f"{len(failures)} check(s) failed: {', '.join(failures)}")

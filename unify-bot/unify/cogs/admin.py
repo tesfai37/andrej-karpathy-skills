@@ -96,6 +96,12 @@ class Admin(commands.Cog):
         looks each saved name up against the server and links the exact matches."""
         await interaction.response.defer(thinking=True)
         guild = interaction.guild
+        if len(guild.members) <= 1:
+            return await interaction.followup.send(embed=embeds.error(
+                "I can only see myself in this server, so there is nobody to match against.\n"
+                "Turn on **Server Members Intent** at "
+                "<https://discord.com/developers/applications> → your app → Bot, "
+                "then restart the bot."))
 
         index: dict[str, set[int]] = {}
         for person in guild.members:

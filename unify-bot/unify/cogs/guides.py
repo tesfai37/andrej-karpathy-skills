@@ -20,12 +20,16 @@ async def topic_autocomplete(interaction: discord.Interaction, current: str):
         "SELECT category, topic FROM guides "
         "WHERE topic LIKE ? OR category LIKE ? ORDER BY category, topic LIMIT 25",
         (f"%{current}%", f"%{current}%"))
-    return [
-        app_commands.Choice(
-            name=f"{CATEGORY_EMOJI.get(r['category'].lower(), '📄')} {r['category']} · {r['topic']}"[:100],
-            value=f"{r['category']}/{r['topic']}")
-        for r in rows
-    ]
+    out = []
+    for r in rows:
+        value = f"{r['category']}/{r['topic']}"
+        if len(value) > 100:          # Discord rejects a longer choice value
+            continue
+        out.append(app_commands.Choice(
+            name=f"{CATEGORY_EMOJI.get(r['category'].lower(), '📄')} "
+                 f"{r['category']} · {r['topic']}"[:100],
+            value=value))
+    return out
 
 
 async def category_autocomplete(interaction: discord.Interaction, current: str):

@@ -114,18 +114,21 @@ class Sync(commands.Cog):
         rows = await self.bot.db.all(
             "SELECT * FROM members WHERE active = 1 AND discord_id IS NOT NULL ORDER BY gamertag")
         mapping = await rolesync.achievement_roles(self.bot.db)
-        plans = []
+        plans, blocked = [], set()
         for row in rows:
             plan = await rolesync.plan_member(
                 self.bot.db, interaction.guild,
                 store.Member(row["id"], row["discord_id"], row["gamertag"], row["active"]),
                 mapping)
+            # Collected from every plan, not just the actionable ones: a member
+            # whose only outstanding roles are out of reach has nothing to apply
+            # and would otherwise be reported as already up to date.
+            blocked.update(plan.blocked)
             if plan.changes:
                 plans.append(plan)
 
         adds = sum(len(p.add) for p in plans)
         removes = sum(len(p.remove) for p in plans)
-        blocked = {r for p in plans for r in p.blocked}
         if not plans:
             return await interaction.followup.send(embed=embeds.success(
                 "Everybody's roles already match their record."

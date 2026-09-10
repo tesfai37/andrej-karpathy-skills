@@ -37,11 +37,20 @@ def as_emoji(text: str | None) -> str | None:
 
 
 def lines_within(lines: list[str], limit: int = FIELD_LIMIT) -> str:
-    """Join as many lines as fit, then say how many were left out."""
+    """Join as many lines as fit, then say how many were left out.
+
+    A single line longer than the whole budget is cut down rather than dropped -
+    otherwise a field built from one long joined string renders as nothing but
+    the "and 1 more" note."""
     out, used = [], 0
     for i, line in enumerate(lines):
-        if used + len(line) + 1 > limit - 24:
-            out.append(f"…and {len(lines) - i} more")
+        room = limit - 24 - used
+        if len(line) + 1 > room:
+            if not out and room > 8:
+                out.append(line[:room - 1].rstrip() + "…")
+                i += 1
+            if i < len(lines):
+                out.append(f"…and {len(lines) - i} more")
             break
         out.append(line)
         used += len(line) + 1
