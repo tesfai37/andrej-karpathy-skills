@@ -373,10 +373,10 @@ full HM `5`, title `10`.
 **New trial released?** No code, no restart:
 
 ```
-/trial add        key:vox  short:vOX  name:Ossein Cage  emoji:🦴
-/achievement new  trial:vOX  key:vox  name:Veteran Ossein Cage  kind:Trial clear
-/achievement new  trial:vOX  key:voxhm name:Ossein Cage HM      kind:Full hard mode  requires:vox
-/map role         role:@vOX HM
+/trial add        key:vnew  short:vNEW  name:The Next Trial  emoji:🗿
+/achievement new  trial:vNEW  key:vnew    name:Veteran The Next Trial  kind:Trial clear
+/achievement new  trial:vNEW  key:vnewhm  name:The Next Trial HM  kind:Full hard mode  requires:vnew
+/map role         role:@vNEW HM
 ```
 
 ---
