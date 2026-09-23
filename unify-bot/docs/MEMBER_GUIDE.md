@@ -47,6 +47,38 @@ server-wide, but you can also just mute the bot.
 
 ---
 
+## Getting on the roster
+
+```
+/register gamertag: YourName.
+```
+
+This **asks** an officer to link your gamertag to your Discord account. It does
+not link anything by itself — an officer approves it first, and if the gamertag
+already has a record they'll check carefully before handing it over.
+
+```
+/whoami
+```
+
+Where you stand: whether you're linked, what's recorded, and anything of yours
+still waiting on an officer. Only you can see it.
+
+### Sending in a score or a parse
+
+If your officers have turned this on:
+
+```
+/submit score  trial: vss  score: 257498  proof: <screenshot>
+/submit parse  label: Arcanist  dps: 118000  proof: <screenshot>
+```
+
+The screenshot is **required**, and nothing is recorded until an officer looks at
+it and approves. If the command tells you submissions are off, pass your
+screenshot to an officer instead.
+
+---
+
 ## Looking yourself up
 
 ```
@@ -190,4 +222,7 @@ whatever you're after. `/guide list` shows everything grouped by category.
 | See how the guild is doing | `/stats` |
 | Look up a CP build or link list | `/guide show` |
 | See everyone | `/roster` |
+| Get on the roster | `/register` |
+| Check my link and what's pending | `/whoami` |
+| Send in a score or parse | `/submit score` · `/submit parse` |
 | Work out what else it does | `/help` |

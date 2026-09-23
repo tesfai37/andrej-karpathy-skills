@@ -80,7 +80,8 @@ class Leaderboards(commands.Cog):
 
     @app_commands.command(description="Who's on top")
     @app_commands.describe(trial="For the score board", parse_target="For the parse board",
-                           role="For the achievements board")
+                           role="For the achievements board",
+                           top="How many to show (default 25, 0 for everyone)")
     @app_commands.choices(board=BOARDS,
                           role=[app_commands.Choice(name=ROLE_LABEL[r], value=r) for r in ROLES])
     @app_commands.autocomplete(trial=autocomplete.trials, parse_target=autocomplete.parse_labels)
@@ -88,7 +89,8 @@ class Leaderboards(commands.Cog):
     async def leaderboard(self, interaction: discord.Interaction,
                           board: app_commands.Choice[str] | None = None,
                           role: app_commands.Choice[str] | None = None,
-                          trial: str | None = None, parse_target: str | None = None):
+                          trial: str | None = None, parse_target: str | None = None,
+                          top: app_commands.Range[int, 0, 1000] = 25):
         kind = board.value if board else "points"
         entries, subtitle = await self.fetch(kind, role.value if role else None,
                                              trial or parse_target)
@@ -96,6 +98,11 @@ class Leaderboards(commands.Cog):
             return await interaction.response.send_message(
                 embed=embeds.warn("No data for that board yet."), ephemeral=True)
 
+        shown = len(entries)
+        if top:
+            entries = entries[:top]
+            if shown > len(entries):
+                subtitle += f"  ·  top {len(entries)} of {shown:,}"
         title = dict((c.value, c.name) for c in BOARDS)[kind]
         pages = [
             embeds.leaderboard_embed(

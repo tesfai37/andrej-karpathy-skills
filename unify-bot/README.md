@@ -150,19 +150,34 @@ The bot reads it and works out:
 …then records `vss`, `vssice` and `vssfire` — because both hard modes require
 the base clear, and the bot fills prerequisites in by itself.
 
-**Two modes**, set with `/config set key:submission_mode`:
+### Who causes a write
 
-- `review` *(default)* — the bot posts an **Approve / Reject** card under the
-  message and waits for an officer
-- `auto` — recorded straight away, with a ✅ reaction
+Nobody's word is taken for it. `submission_mode` decides who can record without
+an officer looking:
+
+| Mode | Applies immediately for |
+| --- | --- |
+| `review` | nobody — everything queues |
+| `trusted` *(default)* | holders of a **recorder role**, set with `/config roles key:recorder_roles` |
+| `auto` | anyone posting in the channel |
+
+Four guards hold in **every** mode, including `auto`:
+
+- a poster can never record their **own** clear — that always queues
+- an unknown member queues
+- an unrecognised role queues
+- a post with no role queues
+
+Everything else lands in `/queue`, where officers approve eight at a time.
 
 **Nothing is ever dropped silently.** If the bot doesn't recognise something it
 says so in the channel:
 
-- ❓ *"I don't know what @Some Role means yet"* → a **Map these roles** button
-  that opens the same two-dropdown picker
+- ❓ *"I don't know what @Some Role means yet"* → a **Map these roles** button,
+  and the post is **held** so mapping the role replays it
 - ❓ *"I couldn't tell who this is for"* → the poster @mentions them or types
   their exact gamertag
+- ♻️ already recorded → the bot says so and does nothing
 
 ---
 
@@ -412,10 +427,14 @@ as-is. Your 60 existing entries come across with the migration.
 | `reports_channel` | Weekly report + backup |
 | `admin_roles` | Who can change data |
 | `viewer_roles` | Who can look people up (empty = everyone) |
-| `submission_mode` | `auto` or `review` |
+| `submission_mode` | `review`, `trusted` or `auto` |
 | `notify_dm` | DM members when they earn something |
 | `mark_label` | What the `L` marker from the old sheet means |
 | `role_sync` | Hand out Discord roles automatically when achievements are earned |
+| `recorder_roles` | May record for others, never for themselves |
+| `registration` · `member_submissions` | What members may *request* (never write) |
+| `activity_channel` · `problems_channel` | Digest log, and the log that needs a human |
+| `digest_minutes` · `briefing_hour` · `audit_days` | Digest cadence, morning briefing, retention |
 | `report_day`, `report_hour` | Weekly report schedule (UTC, `off` to disable) |
 
 ---

@@ -19,6 +19,19 @@ def normalize(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
+async def replay(bot, guild, role_id: int, actor) -> str:
+    """Posts parked on an unrecognised role become reviewable the moment it is
+    mapped, instead of being quietly lost."""
+    cog = bot.get_cog("Submissions")
+    if cog is None:
+        return ""
+    count = await cog.replay_role(guild, role_id, actor)
+    if not count:
+        return ""
+    return (f"\n\n♻️ **{count}** post(s) that were waiting on that role are now in "
+            "`/queue`.")
+
+
 class MapRoleView(views.OwnedView):
     """Two taps: pick the trial, then pick the achievement."""
 
@@ -59,10 +72,11 @@ class MapRoleView(views.OwnedView):
             (self.role.id, kind, value, self.role.name),
         )
         await self.bot.audit(interaction.user, "role mapped", f"{self.role.name} -> {label}")
+        replayed = await replay(self.bot, interaction.guild, self.role.id, interaction.user)
         self.clear_items()
         await interaction.response.edit_message(
-            embed=embeds.success(f"**{self.role.name}** now means **{label}**."), view=None
-        )
+            embed=embeds.success(f"**{self.role.name}** now means **{label}**." + replayed),
+            view=None)
         self.stop()
 
 
@@ -185,7 +199,17 @@ class Mapping(commands.Cog):
             for role, kind, value, _ in found
         ])
         await self.bot.audit(interaction.user, "role mapping", f"auto-mapped {len(found)} roles")
-        await message.edit(embed=embeds.success(f"Saved {len(found)} role mappings."), view=None)
+        replayed = 0
+        cog = self.bot.get_cog("Submissions")
+        if cog is not None:
+            for role, kind, _, _ in found:
+                if kind == "achievement":
+                    replayed += await cog.replay_role(interaction.guild, role.id,
+                                                      interaction.user)
+        await message.edit(embed=embeds.success(
+            f"Saved {len(found)} role mappings."
+            + (f"\n♻️ **{replayed}** parked post(s) are now in `/queue`." if replayed else "")),
+            view=None)
 
     # ------------------------------------------------------------------ manual
     @group.command(name="role", description="Map one Discord role, guided (no typing)")
@@ -210,8 +234,10 @@ class Mapping(commands.Cog):
             (role.id, achievement, role.name),
         )
         await self.bot.audit(interaction.user, "role mapped", f"{role.name} -> {row['name']}")
+        replayed = await replay(self.bot, interaction.guild, role.id, interaction.user)
         await interaction.response.send_message(
-            embed=embeds.success(f"{role.mention} now means **{row['name']}**."))
+            embed=embeds.success(
+                f"{role.mention} now means **{row['name']}**." + replayed))
 
     @group.command(name="remove", description="Forget the mapping for a role")
     @admin_only()

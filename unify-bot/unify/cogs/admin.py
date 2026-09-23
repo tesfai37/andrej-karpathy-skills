@@ -403,21 +403,51 @@ class Admin(commands.Cog):
         await interaction.response.send_message(
             embed=embeds.success(f"Reversed audit #{entry}: {summary}"))
 
-    @app_commands.command(description="Recent admin activity")
+    @app_commands.command(description="Who changed what, and when")
+    @app_commands.describe(member="Only changes touching this gamertag",
+                           actor="Only changes made by this person",
+                           action="Only this sort of change",
+                           days="Only the last N days")
+    @app_commands.autocomplete(member=autocomplete.members)
     @admin_only()
-    async def audit(self, interaction: discord.Interaction, limit: app_commands.Range[int, 1, 200] = 40):
+    async def audit(self, interaction: discord.Interaction,
+                    member: str | None = None, actor: discord.Member | None = None,
+                    action: str | None = None,
+                    days: app_commands.Range[int, 1, 3650] | None = None,
+                    limit: app_commands.Range[int, 1, 200] = 40):
+        where, args = ["1 = 1"], []
+        if member:
+            where.append("summary LIKE ?")
+            args.append(f"%{member}%")
+        if actor:
+            where.append("actor_id = ?")
+            args.append(actor.id)
+        if action:
+            where.append("action LIKE ?")
+            args.append(f"%{action}%")
+        if days:
+            where.append("ts >= datetime('now', ?)")
+            args.append(f"-{days} days")
         rows = await self.bot.db.all(
-            "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,))
+            f"SELECT * FROM audit_log WHERE {' AND '.join(where)} "
+            "ORDER BY id DESC LIMIT ?", (*args, limit))
         if not rows:
             return await interaction.response.send_message(
-                embed=embeds.warn("Nothing logged yet."), ephemeral=True)
+                embed=embeds.warn("Nothing matches that."), ephemeral=True)
         lines = [
             f"`#{r['id']}` **{r['action']}** — {r['summary']}\n"
             f"　　_{r['actor_name']} · {r['ts']}_" + ("  ↩️ undone" if r["undone"] else "")
             for r in rows
         ]
+        criteria = "  ·  ".join(filter(None, [
+            f"member `{member}`" if member else "",
+            f"by {actor.mention}" if actor else "",
+            f"action `{action}`" if action else "",
+            f"last {days} days" if days else "",
+        ])) or "most recent first"
         pages = [
-            embeds.base(self.bot.brand, "📜  Audit log", "\n".join(lines[i:i + 8]))
+            embeds.base(self.bot.brand, f"📜  Audit log ({len(rows)})",
+                        criteria + "\n\n" + "\n".join(lines[i:i + 8]))
             for i in range(0, len(lines), 8)
         ]
         view = views.Paginator(interaction.user.id, pages)

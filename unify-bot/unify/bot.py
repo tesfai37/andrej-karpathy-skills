@@ -24,6 +24,9 @@ COGS = (
     "unify.cogs.mapping",
     "unify.cogs.sync",
     "unify.cogs.submissions",
+    "unify.cogs.reviewqueue",
+    "unify.cogs.membership",
+    "unify.cogs.logs",
     "unify.cogs.admin",
     "unify.cogs.dataio",
     "unify.cogs.settings",
@@ -42,6 +45,9 @@ class UnifyBot(commands.Bot):
         self.env = env
         self.db = Database(env.db_path)
         self.brand = embeds.Brand()
+        # Routine recordings are batched into a digest rather than streamed one
+        # message at a time; the logs cog drains this.
+        self.activity_buffer: list[tuple[str, str]] = []
 
     # ------------------------------------------------------------------ setup
     async def setup_hook(self) -> None:
@@ -111,11 +117,39 @@ class UnifyBot(commands.Bot):
             if problem:
                 log.warning("role sync for %s: %s", member.gamertag, problem)
 
+    async def channel_for(self, setting: str, fallback: str = "") -> discord.abc.Messageable | None:
+        for key in (setting, fallback):
+            if not key:
+                continue
+            channel_id = await self.setting(key)
+            if channel_id:
+                channel = self.get_channel(int(channel_id))
+                if channel is not None:
+                    return channel
+        return None
+
+    async def activity(self, action: str, detail: str) -> None:
+        """Routine, high-volume, and only interesting in aggregate."""
+        self.activity_buffer.append((action, detail))
+
+    async def problem(self, title: str, detail: str) -> None:
+        """Something a human has to look at. Goes out immediately, and is the only
+        log an officer should ever need to watch."""
+        log.warning("%s: %s", title, detail)
+        channel = await self.channel_for("problems_channel", "audit_channel")
+        if channel is None:
+            return
+        e = discord.Embed(title=f"⚠️  {title}", description=detail[:4000],
+                          color=0xF59E0B, timestamp=discord.utils.utcnow())
+        try:
+            await channel.send(embed=e)
+        except discord.HTTPException:
+            log.warning("could not write to the problems channel")
+
     async def audit(self, actor: discord.abc.User, action: str, summary: str,
                     entry_id: int | None = None) -> None:
         """Mirror an admin action into the audit channel, if one is configured."""
-        channel_id = await self.setting("audit_channel")
-        channel = self.get_channel(int(channel_id)) if channel_id else None
+        channel = await self.channel_for("audit_channel")
         if channel is None:
             return
         e = discord.Embed(
@@ -138,7 +172,12 @@ class UnifyBot(commands.Bot):
             message = f"Slow down a moment — try again in {error.retry_after:.0f}s."
         else:
             log.exception("command error", exc_info=error)
-            message = ("Something went wrong on my end. An admin can check the bot logs; "
+            command = getattr(interaction.command, "qualified_name", "unknown")
+            await self.problem(
+                f"/{command} failed",
+                f"For {interaction.user.mention}.\n```\n{type(error).__name__}: "
+                f"{str(error)[:600]}\n```")
+            message = ("Something went wrong on my end. I've logged it for the officers; "
                        "nothing was changed.")
         embed = embeds.error(message)
         try:

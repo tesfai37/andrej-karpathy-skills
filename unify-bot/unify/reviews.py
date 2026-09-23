@@ -1,0 +1,267 @@
+"""The review queue: the one place anything a member asked for waits for an officer.
+
+The rule the whole design rests on: **a member can create a request, but only an
+officer or a trusted recorder can cause a row to be written.** Nothing in here
+writes guild data as a side effect of somebody asking."""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any, Sequence
+
+from . import store
+from .db import Database
+
+KINDS = ("achievements", "register", "score", "parse")
+KIND_LABEL = {
+    "achievements": "Achievements",
+    "register": "Roster claim",
+    "score": "Trial score",
+    "parse": "Parse",
+}
+KIND_EMOJI = {"achievements": "🏅", "register": "👤", "score": "🏆", "parse": "⚔️"}
+
+
+# --------------------------------------------------------------------- routing
+@dataclass(frozen=True)
+class Routing:
+    auto: bool
+    note: str          # why it needs a human, empty when it doesn't
+
+
+def route(
+    *,
+    submitter_id: int,
+    subject_discord_id: int | None,
+    submitter_trusted: bool,
+    member_known: bool,
+    all_roles_mapped: bool,
+    removes: bool,
+) -> Routing:
+    """Decide whether a submission applies immediately or waits for an officer.
+
+    Deliberately conservative, and the order matters. The self-submission check
+    sits *above* the trust check so that a trusted recorder still cannot record
+    their own clear - that is the one hole a trusted-role scheme would otherwise
+    leave wide open."""
+    if not member_known:
+        return Routing(False, "not on the roster yet")
+    if not all_roles_mapped:
+        return Routing(False, "mentions a role I don't recognise")
+    if removes:
+        return Routing(False, "takes something away - never automatic")
+    if subject_discord_id is not None and submitter_id == subject_discord_id:
+        return Routing(False, "you can't record your own clear")
+    if submitter_trusted:
+        return Routing(True, "")
+    return Routing(False, "submitted by someone who isn't a recorder")
+
+
+def decide(
+    mode: str,
+    *,
+    is_recorder: bool,
+    has_role: bool,
+    submitter_id: int,
+    subject_discord_id: int | None,
+    member_known: bool,
+    all_roles_mapped: bool,
+    removes: bool = False,
+) -> Routing:
+    """The whole call: submission_mode plus the routing rules.
+
+    `review` queues everything. `trusted` applies only for recorders. `auto`
+    drops the recorder requirement but keeps every other guard - it never means
+    "write whatever anyone posts"."""
+    if not has_role:
+        return Routing(False, "no role given - pick one when approving")
+    if mode == "review":
+        return Routing(False, "every submission is reviewed here")
+    return route(
+        submitter_id=submitter_id,
+        subject_discord_id=subject_discord_id,
+        submitter_trusted=(mode == "auto") or is_recorder,
+        member_known=member_known,
+        all_roles_mapped=all_roles_mapped,
+        removes=removes,
+    )
+
+
+# --------------------------------------------------------------------- storage
+async def open_request(
+    db: Database,
+    kind: str,
+    *,
+    requester_id: int,
+    member_id: int | None = None,
+    subject: str = "",
+    role: str = "",
+    payload: dict[str, Any] | None = None,
+    proof_url: str = "",
+    source_url: str = "",
+    note: str = "",
+) -> int:
+    cur = await db.run(
+        "INSERT INTO requests(kind, requester_id, member_id, subject, role, payload, "
+        "proof_url, source_url, note) VALUES(?,?,?,?,?,?,?,?,?)",
+        (kind, requester_id, member_id, subject, role,
+         json.dumps(payload or {}), proof_url, source_url, note),
+    )
+    return cur.lastrowid
+
+
+async def attach_card(db: Database, request_id: int, message_id: int, channel_id: int) -> None:
+    await db.run("UPDATE requests SET message_id = ?, channel_id = ? WHERE id = ?",
+                 (message_id, channel_id, request_id))
+
+
+async def get(db: Database, request_id: int):
+    return await db.one("SELECT * FROM requests WHERE id = ?", (request_id,))
+
+
+async def by_message(db: Database, message_id: int):
+    return await db.one(
+        "SELECT * FROM requests WHERE message_id = ? AND status = 'pending'", (message_id,))
+
+
+async def pending(db: Database, kind: str = "", limit: int = 10, offset: int = 0):
+    clause = " AND kind = ?" if kind else ""
+    args: list = [kind] if kind else []
+    return await db.all(
+        f"SELECT * FROM requests WHERE status = 'pending'{clause} "
+        "ORDER BY id LIMIT ? OFFSET ?", (*args, limit, offset))
+
+
+async def pending_count(db: Database, kind: str = "") -> int:
+    clause = " AND kind = ?" if kind else ""
+    args: tuple = (kind,) if kind else ()
+    return await db.val(
+        f"SELECT COUNT(*) FROM requests WHERE status = 'pending'{clause}", args, 0)
+
+
+async def counts_by_kind(db: Database) -> dict[str, int]:
+    rows = await db.all(
+        "SELECT kind, COUNT(*) FROM requests WHERE status = 'pending' GROUP BY kind")
+    return {r[0]: r[1] for r in rows}
+
+
+async def close(db: Database, request_id: int, status: str, actor_id: int) -> None:
+    await db.run(
+        "UPDATE requests SET status = ?, decided_by = ?, decided_at = datetime('now') "
+        "WHERE id = ? AND status = 'pending'",
+        (status, actor_id, request_id))
+
+
+# ------------------------------------------------------------------ duplicates
+async def already_recorded(db: Database, member_id: int, role: str,
+                           keys: Sequence[str]) -> bool:
+    """True when the member already holds everything being submitted."""
+    if not keys:
+        return False
+    wanted = set(await store.expand_prerequisites(db, keys))
+    return wanted <= await store.owned(db, member_id, role)
+
+
+async def duplicate_request(db: Database, kind: str, member_id: int | None,
+                            role: str, payload: dict) -> int | None:
+    """An identical request already waiting. Returns its id, or None."""
+    rows = await db.all(
+        "SELECT id, payload FROM requests WHERE status = 'pending' AND kind = ? "
+        "AND IFNULL(member_id, -1) = IFNULL(?, -1) AND role = ?",
+        (kind, member_id, role))
+    target = json.dumps(payload, sort_keys=True)
+    for row in rows:
+        try:
+            if json.dumps(json.loads(row["payload"]), sort_keys=True) == target:
+                return row["id"]
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+# ----------------------------------------------------------------- applying it
+@dataclass
+class Applied:
+    ok: bool
+    summary: str
+    member: store.Member | None = None
+
+
+async def apply(db: Database, row, actor_id: int, actor_name: str) -> Applied:
+    """Carry out an approved request. Re-checks everything: the world may have
+    moved since it was raised."""
+    kind = row["kind"]
+    payload = json.loads(row["payload"] or "{}")
+
+    if kind == "register":
+        return await _apply_register(db, row, payload, actor_id, actor_name)
+
+    member = await store.get_member(db, row["member_id"]) if row["member_id"] else None
+    if member is None:
+        return Applied(False, "that member is no longer on the roster")
+
+    if kind == "achievements":
+        keys = payload.get("keys", [])
+        added = await store.grant(db, member, row["role"], keys, actor_id, actor_name)
+        return Applied(True,
+                       ", ".join(added) if added else "already had all of these",
+                       member)
+
+    if kind == "score":
+        trial, score = payload.get("trial", ""), int(payload.get("score", 0))
+        if not await db.one("SELECT 1 FROM trials WHERE key = ?", (trial,)):
+            return Applied(False, f"`{trial}` is no longer a trial I know")
+        await store.set_score(db, member, trial, score, actor_id, actor_name)
+        return Applied(True, f"{trial} = {score:,}", member)
+
+    if kind == "parse":
+        label, dps = payload.get("label", ""), int(payload.get("dps", 0))
+        await store.set_parse(db, member, label, dps, actor_id, actor_name)
+        return Applied(True, f"{label} = {dps:,}", member)
+
+    return Applied(False, f"I don't know how to apply a '{kind}' request")
+
+
+async def _apply_register(db: Database, row, payload: dict,
+                          actor_id: int, actor_name: str) -> Applied:
+    """Linking a Discord account to a gamertag. Re-validated at approval time so
+    a claim raised while the name was free cannot land after somebody else took it."""
+    gamertag = (row["subject"] or "").strip()
+    claimant = row["requester_id"]
+    if not gamertag:
+        return Applied(False, "the claim has no gamertag on it")
+
+    holder = await store.find_member(db, claimant)
+    if holder is not None and holder.gamertag.lower() != gamertag.lower():
+        return Applied(False, f"that Discord account is already **{holder.gamertag}**")
+
+    existing = await store.find_member(db, gamertag)
+    if existing is not None and existing.discord_id not in (None, claimant):
+        return Applied(False, f"**{gamertag}** is already linked to another account")
+
+    if existing is None:
+        member = await store.create_member(db, gamertag, claimant)
+        summary = f"added **{gamertag}** and linked it"
+    else:
+        await db.run("UPDATE members SET discord_id = ?, active = 1 WHERE id = ?",
+                     (claimant, existing.id))
+        member = await store.get_member(db, existing.id)
+        summary = f"linked **{gamertag}**"
+
+    await store.log_action(
+        db, actor_id, actor_name, "roster claim", f"{gamertag} -> <@{claimant}>",
+        undo=[("UPDATE members SET discord_id = NULL WHERE id = ?", (member.id,))])
+    return Applied(True, summary, member)
+
+
+async def inherits(db: Database, gamertag: str) -> tuple[int, int]:
+    """What a claim on an existing gamertag would hand over: (achievements, scores).
+    Officers need to see this before approving an identity claim."""
+    member = await store.find_member(db, gamertag)
+    if member is None:
+        return (0, 0)
+    return (
+        await db.val("SELECT COUNT(*) FROM member_achievements WHERE member_id = ?",
+                     (member.id,), 0),
+        await db.val("SELECT COUNT(*) FROM scores WHERE member_id = ?", (member.id,), 0),
+    )

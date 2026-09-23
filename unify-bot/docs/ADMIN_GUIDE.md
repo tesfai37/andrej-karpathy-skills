@@ -49,14 +49,16 @@ slash commands appear instantly instead of after an hour.
 
 ## 2. Set it up — `/setup`
 
-One screen, four dropdowns, no typing:
+One screen, no typing:
 
 1. **Submissions channel** — where people post clears
 2. **Admin log channel** — where the bot writes what changed
-3. **Admin roles** — who is allowed to change data
-4. **Auto-map roles** — matches your existing Discord roles to achievements by name
+3. **Officer roles** — who is allowed to change data
+4. **Recorder roles** — raid leads, who may record for *other* people
+5. **Auto-map roles** — matches your existing Discord roles to achievements by name
 
-Server administrators always count as admins, so you can't lock yourself out.
+Server administrators always count as officers, so you can't lock yourself out.
+The activity and problem log channels are set separately with `/config channel`.
 
 ---
 
@@ -132,13 +134,48 @@ A bulk import is **not** covered by `/undo`. Take an `/export` first.
 
 ## 5. Day-to-day
 
-### Approving clears
+### The queue is the job
 
-With `submission_mode` on `review` (the default), each post gets an
-**Approve / Reject** card. Approve records it and DMs the member. The role dropdown
-on the card lets you correct the role before approving.
+Everything waiting on you — submissions, roster claims, member-sent scores and
+parses — is in one place:
 
-Switch to instant recording with `/config set key:submission_mode value:auto`.
+```
+/queue                  ← everything
+/queue kind: Roster claim
+```
+
+Eight at a time, with **Approve this page**, or pick individual ones from the
+menu and **Approve selected**. Each entry says why it needs you.
+
+Requests also get a card in your admin log channel, so you can approve without
+running the command. Both routes go through the same code.
+
+### Who is allowed to record
+
+`submission_mode` has three settings:
+
+| Mode | Who causes a write |
+| --- | --- |
+| `review` | Nobody. Every submission queues. |
+| `trusted` *(default)* | Only people holding a **recorder role** — and never for themselves. |
+| `auto` | Anyone posting in the channel, but still never for themselves. |
+
+Set recorder roles in `/setup` or with `/config roles key:recorder_roles`. This is
+how you scale past two people: give your raid leads the role, and audit after the
+fact instead of gating everything beforehand.
+
+**A recorder can never record their own clear.** In every mode, a submission where
+the poster is also the subject goes to the queue. That hole would otherwise be the
+easiest one to walk through.
+
+### What members can and cannot do
+
+Nothing a member types changes a row. `/register`, `/submit score` and
+`/submit parse` only ever create a request. Approval is the only write.
+
+- `registration` — lets members raise a roster claim. On by default; still approved.
+- `member_submissions` — lets members send scores and parses with a screenshot.
+  **Off** by default. Proof is mandatory when on.
 
 ### Fixing records by hand
 
@@ -244,10 +281,40 @@ A weekly copy posts itself to `reports_channel` — set the day and hour with
 
 ---
 
-## 10. When something goes wrong
+## 10. Logging
+
+Three channels, split by who reads them. Set them with `/config channel`.
+
+| Setting | What lands there |
+| --- | --- |
+| `activity_channel` | Routine recordings, **batched into a digest** every `digest_minutes` (default 15) rather than one message each |
+| `audit_channel` | Officer data changes, one per action, each with its `/undo` number |
+| `problems_channel` | Only what needs a human: unrecognised roles, unknown members, failed commands, restarts |
+
+The problems channel should be empty on a good day. It's the only one you have to
+watch.
+
+### The morning briefing
+
+Once a day at `briefing_hour` the bot posts what needs you: how many requests are
+waiting and of what sort, how old the oldest is, how many achievements still have
+no Discord role, how many roster entries aren't linked, and how much changed
+yesterday. If you read one thing a day, read that.
+
+### Retention
+
+`audit_days` (default 365) prunes audit entries and decided requests older than
+that, so exports don't get slower forever. Set it to `0` to keep everything.
+
+---
+
+## 11. When something goes wrong
 
 ```
-/audit           ← every change, who made it, when
+/audit                          ← the last 40 changes
+/audit member: BUDMAN008.       ← everything touching one person
+/audit actor: @officer days: 7  ← what somebody changed this week
+/audit action: grant            ← one sort of change
 /undo            ← reverse the last one
 /undo 42         ← reverse a specific entry from /audit
 ```
@@ -284,10 +351,18 @@ Bulk imports are the exception.
 | `reports_channel` | — | Weekly report and backup |
 | `admin_roles` | — | Who can change data |
 | `viewer_roles` | — | Who can look people up (empty = everyone) |
-| `submission_mode` | `review` | `review` or `auto` |
+| `submission_mode` | `trusted` | `review`, `trusted` or `auto` |
 | `notify_dm` | `true` | DM members when they earn something |
 | `mark_label` | `Legacy` | Name for the `L` marker |
 | `role_sync` | `false` | Hand out Discord roles automatically |
+| `recorder_roles` | — | May record for others, never for themselves |
+| `registration` | `true` | Members may raise a roster claim |
+| `member_submissions` | `false` | Members may send scores and parses with proof |
+| `activity_channel` | — | Digest of routine recordings |
+| `problems_channel` | — | Only things needing a human |
+| `digest_minutes` | `15` | How often the activity digest posts |
+| `briefing_hour` | `8` | Hour (UTC) of the morning briefing |
+| `audit_days` | `365` | Audit retention, `0` for forever |
 | `report_day` | `sun` | Weekly report day, or `off` |
 | `report_hour` | `18` | Hour (0–23, UTC) |
 
@@ -299,6 +374,6 @@ Bulk imports are the exception.
 python tests/smoke.py
 ```
 
-104 checks, no Discord connection needed. It builds the whole command tree and
+All checks run with no Discord connection needed. It builds the whole command tree and
 exercises prerequisite chains, message parsing, spreadsheet import, role-sync
 arithmetic and a full export → import round trip.

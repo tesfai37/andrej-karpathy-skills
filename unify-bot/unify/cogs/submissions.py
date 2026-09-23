@@ -1,12 +1,10 @@
-"""Reads the submissions channel and records achievements automatically.
-
-A post like
+"""Reads the submissions channel and turns posts into recorded clears.
 
     @BUDMAN008 dps @vSS Ice HM @vSS Fire HM
 
-becomes: member BUDMAN008, role DPS, achievements vssice + vssfire (plus vss,
-because both of those require it). Nothing is ever dropped silently - if the
-bot can't work something out it says so in the channel with a button to fix it."""
+Nothing here writes guild data on a member's say-so. A post either meets every
+test in reviews.route - recorded by a trusted recorder, for somebody else, with
+every role recognised - or it becomes a request an officer approves."""
 from __future__ import annotations
 
 import json
@@ -14,101 +12,11 @@ import json
 import discord
 from discord.ext import commands
 
-from .. import embeds, parsing, store
-from ..checks import user_is_admin
-from ..config import ROLES, ROLE_EMOJI, ROLE_LABEL
+from .. import embeds, parsing, reviews, store
+from ..checks import member_is_recorder, user_is_admin
+from ..config import ROLE_EMOJI, ROLE_LABEL
 from .mapping import MapRoleView
-
-APPROVE_ID = "unify:sub:approve"
-REJECT_ID = "unify:sub:reject"
-ROLE_ID = "unify:sub:role"
-
-
-class SubmissionView(discord.ui.View):
-    """Persistent - the buttons keep working after the bot restarts."""
-
-    def __init__(self, bot):
-        super().__init__(timeout=None)
-        self.bot = bot
-        self.add_item(RoleChoice())   # also lets an approver correct the role
-
-    async def _pending(self, interaction: discord.Interaction):
-        return await self.bot.db.one(
-            "SELECT * FROM pending_submissions WHERE message_id = ? AND status = 'pending'",
-            (interaction.message.id,),
-        )
-
-    async def _guard(self, interaction: discord.Interaction):
-        if not await user_is_admin(interaction):
-            await interaction.response.send_message(
-                embed=embeds.error("Only admins can approve submissions."), ephemeral=True)
-            return None
-        row = await self._pending(interaction)
-        if row is None:
-            await interaction.response.send_message(
-                embed=embeds.warn("This one has already been dealt with."), ephemeral=True)
-        return row
-
-    @discord.ui.button(label="Approve", emoji="✅", style=discord.ButtonStyle.success,
-                       custom_id=APPROVE_ID)
-    async def approve(self, interaction: discord.Interaction, _: discord.ui.Button):
-        row = await self._guard(interaction)
-        if row is None:
-            return
-        if not row["role"]:
-            return await interaction.response.send_message(
-                embed=embeds.warn("Pick the role from the menu first."), ephemeral=True)
-        cog: Submissions = self.bot.get_cog("Submissions")
-        added = await cog.apply(row, interaction.user, interaction.guild)
-        await self.bot.db.run("UPDATE pending_submissions SET status='approved' WHERE id=?",
-                              (row["id"],))
-        member = await store.get_member(self.bot.db, row["member_id"])
-        await interaction.response.edit_message(
-            embed=embeds.success(
-                f"Recorded for **{member.gamertag}** ({ROLE_LABEL[row['role']]}): "
-                + (", ".join(added) if added else "nothing new - already had it all")
-            ),
-            view=None,
-        )
-
-    @discord.ui.button(label="Reject", emoji="🗑️", style=discord.ButtonStyle.secondary,
-                       custom_id=REJECT_ID)
-    async def reject(self, interaction: discord.Interaction, _: discord.ui.Button):
-        row = await self._guard(interaction)
-        if row is None:
-            return
-        await self.bot.db.run("UPDATE pending_submissions SET status='rejected' WHERE id=?",
-                              (row["id"],))
-        await interaction.response.edit_message(
-            embed=embeds.warn(f"Rejected by {interaction.user.mention}."), view=None)
-
-
-class RoleChoice(discord.ui.Select):
-    def __init__(self):
-        super().__init__(
-            placeholder="Which role was this cleared as?",
-            custom_id=ROLE_ID,
-            options=[discord.SelectOption(label=ROLE_LABEL[r], value=r, emoji=ROLE_EMOJI[r])
-                     for r in ROLES],
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        bot = self.view.bot
-        row = await bot.db.one(
-            "SELECT * FROM pending_submissions WHERE message_id = ? AND status = 'pending'",
-            (interaction.message.id,))
-        if row is None:
-            return await interaction.response.send_message(
-                embed=embeds.warn("This one has already been dealt with."), ephemeral=True)
-        if interaction.user.id != row["submitter_id"] and not await user_is_admin(interaction):
-            return await interaction.response.send_message(
-                embed=embeds.error("Only the person who posted it (or an admin) can set the role."),
-                ephemeral=True)
-        await bot.db.run("UPDATE pending_submissions SET role = ? WHERE id = ?",
-                         (self.values[0], row["id"]))
-        embed = interaction.message.embeds[0]
-        embed.set_field_at(0, name="Role", value=ROLE_LABEL[self.values[0]], inline=True)
-        await interaction.response.edit_message(embed=embed, view=self.view)
+from .reviewqueue import ReviewCard, card
 
 
 class FixMappingView(discord.ui.View):
@@ -123,7 +31,7 @@ class FixMappingView(discord.ui.View):
     async def fix(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not await user_is_admin(interaction):
             return await interaction.response.send_message(
-                embed=embeds.error("An admin needs to do this one."), ephemeral=True)
+                embed=embeds.error("An officer needs to do this one."), ephemeral=True)
         role = interaction.guild.get_role(self.role_ids[0])
         if role is None:
             return await interaction.response.send_message(
@@ -139,9 +47,6 @@ class Submissions(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    async def cog_load(self):
-        self.bot.add_view(SubmissionView(self.bot))
-
     # ------------------------------------------------------------------ listener
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -150,56 +55,131 @@ class Submissions(commands.Cog):
         channel_id = await self.bot.setting("submissions_channel")
         if not channel_id or message.channel.id != int(channel_id):
             return
+        await self.handle(message)
 
+    @commands.Cog.listener()
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
+        """Somebody fixing a wrong mention shouldn't have to repost."""
+        channel_id = await self.bot.setting("submissions_channel")
+        if (after.author.bot or after.guild is None or not channel_id
+                or after.channel.id != int(channel_id) or before.content == after.content):
+            return
+        if await self.bot.db.val(
+                "SELECT 1 FROM requests WHERE source_url = ? AND status <> 'pending'",
+                (after.jump_url,)):
+            return          # already decided; an edit can't rewrite history
+        await self.bot.db.run(
+            "UPDATE requests SET status = 'rejected', note = 'superseded by an edit' "
+            "WHERE source_url = ? AND status = 'pending'", (after.jump_url,))
+        await self.handle(after)
+
+    # ------------------------------------------------------------------ the flow
+    async def handle(self, message: discord.Message) -> None:
         parsed = await parsing.parse_message(self.bot.db, message.content)
         if parsed.is_empty:
             return
 
+        member = await self.identify(parsed)
+        role = parsed.roles[0] if parsed.roles else ""
+
         if parsed.unmapped_role_ids:
-            names = ", ".join(f"<@&{r}>" for r in parsed.unmapped_role_ids)
-            await message.add_reaction("❓")
-            await message.reply(
-                embed=embeds.warn(
-                    f"I don't know what {names} means yet, so I've left this post alone.\n"
-                    "An admin can press the button below to teach me - it takes two taps."),
-                view=FixMappingView(self.bot, parsed.unmapped_role_ids),
-                mention_author=False,
-            )
+            await self.park(message, parsed, member, role)
             return
 
-        member = await self.identify(parsed)
         if member is None:
             await message.add_reaction("❓")
             await message.reply(
                 embed=embeds.warn(
                     "I couldn't tell who this is for. @mention them, or type their exact "
-                    "gamertag. If they're new, an admin can add them with `/member add`."),
-                mention_author=False,
-            )
+                    "gamertag. If they're new, an officer can add them with `/member add`."),
+                mention_author=False)
+            await self.bot.problem(
+                "Submission with no recognisable member",
+                f"{message.author.mention} in {message.channel.mention} — "
+                f"[jump]({message.jump_url})")
             return
 
-        role = parsed.roles[0] if parsed.roles else ""
-        mode = await self.bot.setting("submission_mode")
+        if role and await reviews.already_recorded(self.bot.db, member.id, role, parsed.keys):
+            await message.add_reaction("♻️")
+            await message.reply(
+                embed=embeds.info(self.bot.brand,
+                                  f"**{member.gamertag}** already has all of this on "
+                                  f"{ROLE_LABEL[role]}. Nothing to do."),
+                mention_author=False)
+            return
 
-        if role and mode == "auto":
-            row = {"member_id": member.id, "role": role, "keys": json.dumps(parsed.keys),
-                   "source_url": message.jump_url}
-            added = await self.apply(row, message.author, message.guild)
+        payload = {"keys": parsed.keys, "content": message.content}
+        waiting = await reviews.duplicate_request(
+            self.bot.db, "achievements", member.id, role, payload)
+        if waiting:
+            await message.add_reaction("♻️")
+            return
+
+        mode = await self.bot.setting("submission_mode")
+        routing = reviews.decide(
+            mode,
+            is_recorder=await member_is_recorder(self.bot, message.guild, message.author.id),
+            has_role=bool(role),
+            submitter_id=message.author.id,
+            subject_discord_id=member.discord_id,
+            member_known=True,
+            all_roles_mapped=True,
+        )
+
+        if routing.auto:
+            added = await self.record(member, role, parsed.keys, message.author,
+                                      message.guild)
             await message.add_reaction("✅")
             await message.reply(
                 embed=embeds.success(
                     f"**{member.gamertag}** — {ROLE_EMOJI[role]} {ROLE_LABEL[role]}\n"
                     + (", ".join(added) if added else "_already had all of these_")),
-                mention_author=False,
-            )
+                mention_author=False)
             return
 
-        await self.post_for_review(message, member, role, parsed.keys)
+        await self.queue(message, member, role, payload, routing.note)
 
+    async def park(self, message, parsed, member, role) -> None:
+        """A post naming a role the bot doesn't know. Kept, not dropped, so that
+        mapping the role later can replay it."""
+        names = ", ".join(f"<@&{r}>" for r in parsed.unmapped_role_ids)
+        await message.add_reaction("❓")
+        request_id = await reviews.open_request(
+            self.bot.db, "achievements",
+            requester_id=message.author.id,
+            member_id=member.id if member else None,
+            role=role,
+            payload={"keys": parsed.keys, "content": message.content,
+                     "unmapped": parsed.unmapped_role_ids},
+            source_url=message.jump_url,
+            note="mentions a role I don't recognise",
+        )
+        await message.reply(
+            embed=embeds.warn(
+                f"I don't know what {names} means yet, so I've held this as request "
+                f"`#{request_id}`.\nAn officer can map it below — everything waiting on "
+                "that role gets applied automatically."),
+            view=FixMappingView(self.bot, parsed.unmapped_role_ids),
+            mention_author=False)
+        await self.bot.problem(
+            "Unrecognised role in a submission",
+            f"{names} — request `#{request_id}` is waiting. `/map role` fixes it.")
+
+    async def queue(self, message, member, role, payload, note) -> None:
+        request_id = await reviews.open_request(
+            self.bot.db, "achievements",
+            requester_id=message.author.id, member_id=member.id, role=role,
+            payload=payload, source_url=message.jump_url, note=note)
+        row = await reviews.get(self.bot.db, request_id)
+        posted = await message.reply(embed=await card(self.bot, row),
+                                     view=ReviewCard(self.bot), mention_author=False)
+        await reviews.attach_card(self.bot.db, request_id, posted.id, posted.channel.id)
+        await message.add_reaction("⏳")
+
+    # ------------------------------------------------------------------ helpers
     async def identify(self, parsed: parsing.Parsed) -> store.Member | None:
-        """A @mention is taken as the final answer. Only when the post names
-        nobody do we fall back to matching a word against a gamertag - otherwise
-        a stray word could quietly redirect a clear onto the wrong person."""
+        """A @mention is the final answer. Only when the post names nobody do we
+        fall back to matching a word, so a stray word cannot redirect a clear."""
         db = self.bot.db
         if parsed.discord_ids:
             for discord_id in parsed.discord_ids:
@@ -213,52 +193,28 @@ class Submissions(commands.Cog):
                 return found
         return None
 
-    async def post_for_review(self, message, member, role, keys):
-        expanded = await store.expand_prerequisites(self.bot.db, keys)
-        e = embeds.base(
-            self.bot.brand, "📝  Waiting for approval",
-            f"From {message.author.mention} — [jump to post]({message.jump_url})",
-        )
-        e.add_field(name="Role", value=ROLE_LABEL[role] if role else "❗ pick below", inline=True)
-        e.add_field(name="Member", value=member.mention, inline=True)
-        e.add_field(name="Achievements", value=", ".join(expanded) or "—", inline=False)
-
-        view = SubmissionView(self.bot)
-        posted = await message.reply(embed=e, view=view, mention_author=False)
-        await self.bot.db.run(
-            "INSERT INTO pending_submissions"
-            "(message_id, channel_id, source_url, submitter_id, member_id, role, keys) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (posted.id, posted.channel.id, message.jump_url, message.author.id,
-             member.id, role, json.dumps(keys)),
-        )
-        await message.add_reaction("⏳")
-
-    # ------------------------------------------------------------------ apply
-    async def apply(self, row, actor: discord.abc.User, guild: discord.Guild) -> list[str]:
-        db = self.bot.db
-        member = await store.get_member(db, row["member_id"])
-        keys = json.loads(row["keys"])
-        added = await store.grant(db, member, row["role"], keys, actor.id, str(actor))
+    async def record(self, member, role, keys, actor, guild) -> list[str]:
+        added = await store.grant(self.bot.db, member, role, keys, actor.id, str(actor))
         if added:
-            await self.bot.audit(
-                actor, "achievements recorded",
-                f"{member.gamertag} [{row['role']}] +{', '.join(added)}")
+            await self.bot.activity(
+                "clear recorded",
+                f"**{member.gamertag}** {ROLE_LABEL[role]} · {', '.join(added)}")
             await self.bot.sync_roles(guild, member, f"earned {', '.join(added)}")
-            await self.notify(member, row["role"], added)
+            await self.notify(member, role, added)
         return added
 
     async def notify(self, member: store.Member, role: str, added: list[str]) -> None:
-        if not await self.bot.setting("notify_dm") or not member.discord_id:
+        if not added or not await self.bot.setting("notify_dm") or not member.discord_id:
             return
         user = self.bot.get_user(member.discord_id)
         if user is None:
             return
         names = await self.bot.db.all(
-            f"SELECT name FROM achievements WHERE key IN ({','.join('?' * len(added))})", added)
+            f"SELECT name FROM achievements WHERE key IN ({','.join('?' * len(added))})",
+            list(added))
         e = embeds.base(
             self.bot.brand, "🎉  Nice clear!",
-            f"Recorded on your **{ROLE_LABEL[role]}** record:\n"
+            f"Recorded on your **{ROLE_LABEL.get(role, role)}** record:\n"
             + "\n".join(f"• {n[0]}" for n in names)
             + "\n\nRun `/me` in the server to see your card.",
         )
@@ -266,6 +222,31 @@ class Submissions(commands.Cog):
             await user.send(embed=e)
         except discord.HTTPException:
             pass
+
+    # ------------------------------------------------------------------ replay
+    async def replay_role(self, guild, role_id: int, actor) -> int:
+        """Called after a role is mapped: re-read every post that was parked on it."""
+        rows = await self.bot.db.all(
+            "SELECT * FROM requests WHERE status = 'pending' AND kind = 'achievements' "
+            "AND note = 'mentions a role I don''t recognise'")
+        replayed = 0
+        for row in rows:
+            payload = json.loads(row["payload"] or "{}")
+            if role_id not in payload.get("unmapped", []):
+                continue
+            parsed = await parsing.parse_message(self.bot.db, payload.get("content", ""))
+            if parsed.unmapped_role_ids:
+                await self.bot.db.run(
+                    "UPDATE requests SET payload = ? WHERE id = ?",
+                    (json.dumps({**payload, "keys": parsed.keys,
+                                 "unmapped": parsed.unmapped_role_ids}), row["id"]))
+                continue
+            await self.bot.db.run(
+                "UPDATE requests SET payload = ?, note = ? WHERE id = ?",
+                (json.dumps({**payload, "keys": parsed.keys, "unmapped": []}),
+                 "was waiting on a role mapping", row["id"]))
+            replayed += 1
+        return replayed
 
 
 async def setup(bot):

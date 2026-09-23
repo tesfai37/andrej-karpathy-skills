@@ -31,8 +31,22 @@ SETTING_DEFAULTS: dict[str, tuple[str, object, str]] = {
     "reports_channel":      ("channel", 0, "Channel for scheduled exports and reports"),
     "admin_roles":          ("roles",   [], "Roles allowed to change data"),
     "viewer_roles":         ("roles",   [], "Roles allowed to look people up (empty = everyone)"),
-    "submission_mode":      ("choice:auto,review", "review",
-                             "auto = record instantly, review = an admin presses Approve"),
+    "submission_mode":      ("choice:auto,review,trusted", "trusted",
+                             "trusted = recorders apply instantly and everything else "
+                             "queues; review = everything queues; auto = everything applies"),
+    "recorder_roles":       ("roles",   [],
+                             "Roles trusted to record for OTHER people - never for themselves"),
+    "registration":         ("bool",    True,
+                             "Let members raise a roster claim with /register (an officer "
+                             "still approves it)"),
+    "member_submissions":   ("bool",    False,
+                             "Let members raise score and parse requests with /submit "
+                             "(an officer still approves, and proof is required)"),
+    "activity_channel":     ("channel", 0, "Digest of routine recordings"),
+    "problems_channel":     ("channel", 0, "Only things that need a human: errors, blocked posts"),
+    "digest_minutes":       ("int",     15, "How often to post the activity digest (minutes)"),
+    "briefing_hour":        ("int",     8, "Hour (0-23, UTC) for the morning briefing"),
+    "audit_days":           ("int",     365, "How long to keep audit entries (0 = forever)"),
     "notify_dm":            ("bool",    True, "DM a member when they earn something"),
     "mark_label":           ("text",    "Legacy",
                              "Name for the 'L' marker: records from before ESO made "

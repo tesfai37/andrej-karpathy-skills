@@ -28,10 +28,19 @@ SECTIONS: list[tuple[str, str, bool, list[tuple[str, str]]]] = [
         ("/roster", "Everyone in the guild"),
         ("/guide show", "CP builds, channel links and guild reference"),
         ("/guide list", "Everything the bot can tell you about"),
+        ("/whoami", "Your link, and anything of yours waiting on an officer"),
+        ("/register", "Ask an officer to link your gamertag to this account"),
+        ("/submit score", "Send a trial score in with a screenshot"),
+        ("/submit parse", "Send a parse in with a screenshot"),
     ]),
     ("Leaderboards", "📊", False, [
         ("/leaderboard", "Points, achievements, scores or parses"),
         ("/stats", "How the guild is doing overall"),
+    ]),
+    ("Admin · the queue", "📥", True, [
+        ("/queue", "Everything waiting on an officer, approved in batches"),
+        ("/audit", "Who changed what — filter by member, officer, action or days"),
+        ("/undo", "Reverse a change"),
     ]),
     ("Admin · people", "👥", True, [
         ("/member add", "Put somebody on the roster"),

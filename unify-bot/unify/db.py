@@ -111,6 +111,26 @@ CREATE TABLE IF NOT EXISTS pending_submissions (
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS requests (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind         TEXT NOT NULL,                          -- achievements|register|score|parse
+    status       TEXT NOT NULL DEFAULT 'pending',        -- pending|approved|rejected
+    requester_id INTEGER NOT NULL,                       -- who asked
+    member_id    INTEGER REFERENCES members(id) ON DELETE CASCADE,
+    subject      TEXT NOT NULL DEFAULT '',               -- gamertag, when no member row yet
+    role         TEXT NOT NULL DEFAULT '',
+    payload      TEXT NOT NULL DEFAULT '{}',             -- JSON, shaped by kind
+    proof_url    TEXT NOT NULL DEFAULT '',
+    source_url   TEXT NOT NULL DEFAULT '',
+    message_id   INTEGER UNIQUE,                         -- the review card, once posted
+    channel_id   INTEGER,
+    note         TEXT NOT NULL DEFAULT '',               -- why it needs a human
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    decided_by   INTEGER,
+    decided_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_req_status ON requests(status, id);
 CREATE INDEX IF NOT EXISTS idx_ma_member ON member_achievements(member_id);
 CREATE INDEX IF NOT EXISTS idx_ma_key    ON member_achievements(achievement_key);
 CREATE INDEX IF NOT EXISTS idx_audit_ts  ON audit_log(ts DESC);
@@ -132,7 +152,26 @@ class Database:
         await self.conn.execute("PRAGMA journal_mode=WAL")
         await self.conn.executescript(SCHEMA)
         await self._add_missing_columns()
+        await self._carry_over_pending()
         await self.conn.commit()
+
+    async def _carry_over_pending(self) -> None:
+        """Submissions awaiting review used to live in their own table. Move any
+        that are still waiting into the unified queue rather than dropping them."""
+        if await self.val("SELECT value FROM settings WHERE key = '_pending_migrated'"):
+            return
+        rows = await self.all("SELECT * FROM pending_submissions WHERE status = 'pending'")
+        for r in rows:
+            await self.conn.execute(
+                "INSERT OR IGNORE INTO requests"
+                "(kind, requester_id, member_id, role, payload, source_url, "
+                " message_id, channel_id, created_at) "
+                "VALUES('achievements',?,?,?,?,?,?,?,?)",
+                (r["submitter_id"], r["member_id"], r["role"], r["keys"] or "[]",
+                 r["source_url"], r["message_id"], r["channel_id"], r["created_at"]))
+        await self.conn.execute(
+            "INSERT OR REPLACE INTO settings(key, value) VALUES('_pending_migrated', ?)",
+            (json.dumps(len(rows)),))
 
     async def _add_missing_columns(self) -> None:
         """CREATE TABLE IF NOT EXISTS won't add a column to a database that

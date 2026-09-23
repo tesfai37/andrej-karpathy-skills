@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from unify import embeds, importer, parsing, rolesync, store  # noqa: E402
+from unify import embeds, importer, parsing, reviews, rolesync, store  # noqa: E402
 from unify.bot import COGS, UnifyBot  # noqa: E402
 from unify.config import Env  # noqa: E402
 from unify.db import Database  # noqa: E402
@@ -561,6 +561,185 @@ async def census(db) -> dict[str, int]:
         "guides": await db.val("SELECT COUNT(*) FROM guides", (), 0),
     }
 
+
+async def test_trust_routing() -> None:
+    """Who is allowed to cause a write. This is the rule the rest of the design
+    rests on, so every branch of it is pinned here."""
+    print("\ntrust routing")
+
+    def decide(**kw):
+        base = dict(submitter_id=1, subject_discord_id=2, submitter_trusted=True,
+                    member_known=True, all_roles_mapped=True, removes=False)
+        base.update(kw)
+        return reviews.route(**base)
+
+    check("a trusted recorder applies straight away", decide().auto)
+    check("an untrusted member never applies", not decide(submitter_trusted=False).auto)
+    check("a recorder still cannot record for themselves",
+          not decide(subject_discord_id=1).auto,
+          decide(subject_discord_id=1).note)
+    check("an unknown member always queues", not decide(member_known=False).auto)
+    check("an unrecognised role always queues", not decide(all_roles_mapped=False).auto)
+    check("a removal is never automatic", not decide(removes=True).auto)
+    check("self-submission outranks trust",
+          not decide(subject_discord_id=1, submitter_trusted=True).auto)
+    check("every refusal explains itself",
+          all(decide(**kw).note for kw in (
+              {"submitter_trusted": False}, {"subject_discord_id": 1},
+              {"member_known": False}, {"all_roles_mapped": False}, {"removes": True})))
+    check("an approval carries no complaint", decide().note == "")
+
+
+async def test_review_queue() -> None:
+    print("\nreview queue")
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        ace = await store.create_member(db, "ACE", 4001)
+
+        rid = await reviews.open_request(
+            db, "achievements", requester_id=9, member_id=ace.id, role="dps",
+            payload={"keys": ["extinguisher"]}, note="not a recorder")
+        check("a request starts pending, writing nothing",
+              await reviews.pending_count(db) == 1
+              and await store.owned(db, ace.id, "dps") == set())
+
+        dup = await reviews.duplicate_request(
+            db, "achievements", ace.id, "dps", {"keys": ["extinguisher"]})
+        check("an identical waiting request is spotted", dup == rid)
+        check("a different one is not",
+              await reviews.duplicate_request(
+                  db, "achievements", ace.id, "dps", {"keys": ["vkahm"]}) is None)
+
+        result = await reviews.apply(db, await reviews.get(db, rid), 7, "officer")
+        await reviews.close(db, rid, "approved", 7)
+        check("approving writes the record", result.ok
+              and len(await store.owned(db, ace.id, "dps")) == 5)
+        check("the queue empties", await reviews.pending_count(db) == 0)
+        check("approving twice is impossible",
+              await reviews.by_message(db, 0) is None)
+
+        check("a clear already held is recognised",
+              await reviews.already_recorded(db, ace.id, "dps", ["vss"]))
+        check("one they lack is not",
+              not await reviews.already_recorded(db, ace.id, "dps", ["vkahm"]))
+        await db.close()
+
+
+async def test_roster_claims() -> None:
+    """A claim on an existing gamertag is an identity takeover attempt."""
+    print("\nroster claims")
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        veteran = await store.create_member(db, "VETERAN", None)
+        await store.grant(db, veteran, "dps", ["godslayer"], 1, "t")
+
+        got, scores = await reviews.inherits(db, "VETERAN")
+        check("officers are shown what a claim would hand over", got == 6, f"{got} achievements")
+
+        rid = await reviews.open_request(db, "register", requester_id=5001,
+                                         subject="VETERAN")
+        check("raising a claim links nothing on its own",
+              (await store.get_member(db, veteran.id)).discord_id is None)
+
+        result = await reviews.apply(db, await reviews.get(db, rid), 7, "officer")
+        check("approving links it", result.ok
+              and (await store.get_member(db, veteran.id)).discord_id == 5001)
+
+        rid2 = await reviews.open_request(db, "register", requester_id=6002,
+                                          subject="VETERAN")
+        second = await reviews.apply(db, await reviews.get(db, rid2), 7, "officer")
+        check("a second account cannot take the same gamertag",
+              not second.ok, second.summary)
+
+        rid3 = await reviews.open_request(db, "register", requester_id=5001,
+                                          subject="SOMEONEELSE")
+        third = await reviews.apply(db, await reviews.get(db, rid3), 7, "officer")
+        check("one Discord account cannot hold two gamertags",
+              not third.ok, third.summary)
+        await db.close()
+
+
+async def test_submission_modes() -> None:
+    """The complete matrix of who causes a write, across all three modes."""
+    print("\nsubmission modes")
+
+    def d(mode, **kw):
+        base = dict(is_recorder=False, has_role=True, submitter_id=1,
+                    subject_discord_id=2, member_known=True, all_roles_mapped=True)
+        base.update(kw)
+        return reviews.decide(mode, **base)
+
+    check("review mode queues even a recorder", not d("review", is_recorder=True).auto)
+    check("trusted mode queues an ordinary member", not d("trusted").auto)
+    check("trusted mode applies for a recorder", d("trusted", is_recorder=True).auto)
+    check("auto mode applies for an ordinary member", d("auto").auto)
+
+    for mode in ("review", "trusted", "auto"):
+        check(f"{mode}: nobody records their own clear",
+              not d(mode, is_recorder=True, subject_discord_id=1).auto)
+        check(f"{mode}: an unknown member always queues",
+              not d(mode, is_recorder=True, member_known=False).auto)
+        check(f"{mode}: an unmapped role always queues",
+              not d(mode, is_recorder=True, all_roles_mapped=False).auto)
+        check(f"{mode}: a post with no role always queues",
+              not d(mode, is_recorder=True, has_role=False).auto)
+
+
+async def test_member_input_is_inert() -> None:
+    """Whatever a member sends, nothing changes until an officer approves."""
+    print("\nmember input writes nothing")
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        member = await store.create_member(db, "CHANCER", 900)
+
+        before = await census(db)
+        await reviews.open_request(db, "score", requester_id=900, member_id=member.id,
+                                   payload={"trial": "vss", "score": 999999},
+                                   proof_url="http://example/x.png")
+        await reviews.open_request(db, "parse", requester_id=900, member_id=member.id,
+                                   payload={"label": "Arcanist", "dps": 999999})
+        await reviews.open_request(db, "register", requester_id=901, subject="CHANCER")
+        after = await census(db)
+        check("three requests changed no guild data", before == after,
+              f"{await reviews.pending_count(db)} waiting")
+
+        rows = await reviews.pending(db)
+        result = await reviews.apply(db, rows[0], 7, "officer")
+        check("only approval writes", result.ok
+              and await db.val("SELECT score FROM scores WHERE member_id=?",
+                               (member.id,), 0) == 999999)
+
+        claim = [r for r in rows if r["kind"] == "register"][0]
+        taken = await reviews.apply(db, claim, 7, "officer")
+        check("a claim on a linked gamertag is refused at approval time",
+              not taken.ok, taken.summary)
+        await db.close()
+
+
+async def test_leaderboard_top_n() -> None:
+    print("\nleaderboard top-N")
+    from unify.cogs.leaderboards import Leaderboards
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        for i in range(40):
+            m = await store.create_member(db, f"P{i:02d}", None)
+            await store.grant(db, m, "dps", ["vss"], 1, "t")
+        cog = Leaderboards(type("S", (), {"db": db, "brand": embeds.Brand()})())
+        entries, _ = await cog.fetch("points", None, None)
+        check("the board still knows about everyone", len(entries) == 40)
+        check("but a caller can ask for just the top", len(entries[:25]) == 25)
+        await db.close()
+
+
+def test_gamertag_validation() -> None:
+    print("\ngamertag validation")
+    from unify.cogs.membership import GAMERTAG
+    for good in ("BUDMAN008.", "A Decent Dude.", "x_y-z", "o'brien", "ACME NoLiFe."):
+        check(f"accepts {good!r}", bool(GAMERTAG.match(good)))
+    for bad in ("", "x", "<@1234>", "a" * 41, "drop;table", "hi\nthere"):
+        check(f"rejects {bad[:14]!r}", not GAMERTAG.match(bad))
+
 async def main() -> None:
     await test_command_tree()
     await test_prerequisites()
@@ -574,6 +753,13 @@ async def main() -> None:
     await test_name_matching()
     await test_guild_only()
     await test_export_round_trip()
+    await test_trust_routing()
+    await test_review_queue()
+    await test_roster_claims()
+    await test_submission_modes()
+    await test_member_input_is_inert()
+    await test_leaderboard_top_n()
+    test_gamertag_validation()
     print()
     if failures:
         print(f"{len(failures)} check(s) failed: {', '.join(failures)}")

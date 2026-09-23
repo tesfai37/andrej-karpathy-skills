@@ -30,6 +30,30 @@ async def user_can_view(interaction: discord.Interaction) -> bool:
     return await _has_configured_role(interaction, "viewer_roles")
 
 
+async def user_is_recorder(interaction: discord.Interaction) -> bool:
+    """Trusted to record for other people. Admins always are; nobody is ever
+    trusted to record for themselves (see reviews.route)."""
+    if await user_is_admin(interaction):
+        return True
+    return await _has_configured_role(interaction, "recorder_roles")
+
+
+async def member_is_recorder(bot, guild, discord_id: int) -> bool:
+    """The same test outside a command, for the channel listener."""
+    person = guild.get_member(discord_id) if guild else None
+    if person is None:
+        return False
+    perms = person.guild_permissions
+    if perms.administrator or perms.manage_guild:
+        return True
+    mine = {r.id for r in person.roles}
+    for setting in ("admin_roles", "recorder_roles"):
+        ids = await bot.db.get_setting(setting, []) or []
+        if mine & {int(i) for i in ids}:
+            return True
+    return False
+
+
 class NotAllowed(app_commands.CheckFailure):
     def __init__(self, message: str):
         super().__init__(message)

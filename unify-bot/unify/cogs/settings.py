@@ -22,12 +22,13 @@ class ChannelPicker(discord.ui.ChannelSelect):
         await self.view.refresh(interaction)
 
 
-class AdminRolePicker(discord.ui.RoleSelect):
-    def __init__(self, row: int):
-        super().__init__(placeholder="Which roles count as admins?", max_values=10, row=row)
+class RolesPicker(discord.ui.RoleSelect):
+    def __init__(self, key: str, placeholder: str, row: int):
+        super().__init__(placeholder=placeholder, max_values=10, row=row)
+        self.key = key
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.client.db.set_setting("admin_roles", [r.id for r in self.values])
+        await interaction.client.db.set_setting(self.key, [r.id for r in self.values])
         await self.view.refresh(interaction)
 
 
@@ -38,7 +39,9 @@ class SetupView(views.OwnedView):
         self.add_item(ChannelPicker("submissions_channel",
                                     "1) Channel where people post achievements", 0))
         self.add_item(ChannelPicker("audit_channel", "2) Channel for the admin log", 1))
-        self.add_item(AdminRolePicker(2))
+        self.add_item(RolesPicker("admin_roles", "3) Which roles are officers?", 2))
+        self.add_item(RolesPicker("recorder_roles",
+                                  "4) Which roles may record for others? (raid leads)", 3))
 
     async def build(self) -> discord.Embed:
         db = self.bot.db
@@ -53,16 +56,25 @@ class SetupView(views.OwnedView):
 
         e = embeds.base(
             self.bot.brand, "🚀  Set up the bot",
-            "Four things and you're done. Nothing here needs a keyboard.",
+            "Five things and you're done. Nothing here needs a keyboard.\n"
+            "Activity and problem log channels are set with `/config channel`.",
         )
         e.add_field(name="1 · Submissions channel",
                     value=await channel("submissions_channel"), inline=False)
         e.add_field(name="2 · Admin log channel",
                     value=await channel("audit_channel"), inline=False)
-        e.add_field(name="3 · Admin roles",
+        e.add_field(name="3 · Officer roles",
                     value=" ".join(f"<@&{r}>" for r in admin_roles) or "_server admins only_",
                     inline=False)
-        e.add_field(name="4 · Achievement roles",
+        recorders = await db.get_setting("recorder_roles", []) or []
+        e.add_field(
+            name="4 · Recorder roles",
+            value=(" ".join(f"<@&{r}>" for r in recorders) +
+                   "\n_these may record for other people, never for themselves_")
+                  if recorders else
+                  "_none yet — without these, every submission waits for an officer_",
+            inline=False)
+        e.add_field(name="5 · Achievement roles",
                     value=(f"**{mapped}** roles mapped — press the button below to scan for more"
                            if mapped else
                            "None yet. Press **Auto-map roles** and I'll match your existing "
@@ -80,7 +92,7 @@ class SetupView(views.OwnedView):
         await interaction.response.edit_message(embed=await self.build(), view=self)
 
     @discord.ui.button(label="Auto-map roles", emoji="🔗",
-                       style=discord.ButtonStyle.primary, row=3)
+                       style=discord.ButtonStyle.primary, row=4)
     async def automap(self, interaction: discord.Interaction, _: discord.ui.Button):
         cog = self.bot.get_cog("Mapping")
         found = await cog.propose(interaction.guild)
@@ -102,7 +114,7 @@ class SetupView(views.OwnedView):
                                  "`/map missing` shows what's left."),
             ephemeral=True)
 
-    @discord.ui.button(label="Done", emoji="✅", style=discord.ButtonStyle.success, row=3)
+    @discord.ui.button(label="Done", emoji="✅", style=discord.ButtonStyle.success, row=4)
     async def done(self, interaction: discord.Interaction, _: discord.ui.Button):
         self.clear_items()
         await interaction.response.edit_message(
