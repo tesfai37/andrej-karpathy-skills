@@ -65,14 +65,30 @@ class Lookup:
     candidates: list[Member] = field(default_factory=list)   # set when ambiguous
 
 
+async def same_gamertag(db: Database, gamertag: str) -> list[Member]:
+    """Every record whose gamertag is this one, ignoring case and a trailing dot.
+
+    96% of the roster carries a trailing dot by guild convention, and people leave
+    it off when they type their own gamertag. Claims and /member add use this so
+    `BUDMAN008` finds `BUDMAN008.` instead of creating a second, empty record. Only
+    the dot is forgiven; no other near miss ever matches."""
+    core = gamertag.strip().lower().rstrip(".").strip()
+    if not core:
+        return []
+    rows = await db.all(
+        "SELECT * FROM members WHERE RTRIM(LOWER(gamertag), '.') = ? ORDER BY id", (core,))
+    return [_member(r) for r in rows]
+
+
 async def lookup_member(db: Database, query: str | int, guild=None) -> Lookup:
     """For a name a person typed into a command: gamertag, Discord mention or id,
     the Discord name from the old spreadsheet, or their current Discord name.
 
-    Deliberately NOT used by identity decisions - roster claims, imports and the
-    channel reader stay on exact find_member - because a loose match there could
-    hand one person's record to another. Here a near miss only shows the wrong
-    card, and two people answering to one name are refused rather than guessed."""
+    Deliberately NOT used by identity decisions - roster claims and imports only
+    forgive a trailing dot (same_gamertag), and the channel reader stays on exact
+    find_member - because a loose match there could hand one person's record to
+    another. Here a near miss only shows the wrong card, and two people answering
+    to one name are refused rather than guessed."""
     exact = await find_member(db, query)
     if exact is not None or isinstance(query, int):
         return Lookup(exact)
@@ -81,11 +97,9 @@ async def lookup_member(db: Database, query: str | int, guild=None) -> Lookup:
         return Lookup(None)
 
     found: dict[int, Member] = {}
-    # 96% of gamertags carry a trailing dot by guild convention, and people leave
-    # it off when typing. Two records differing only by that dot are refused below.
-    for row in await db.all("SELECT * FROM members WHERE RTRIM(LOWER(gamertag), '.') = ?",
-                            (wanted.rstrip(".").strip(),)):
-        found[row["id"]] = _member(row)
+    # Two records differing only by the trailing dot are refused below.
+    for member in await same_gamertag(db, wanted):
+        found[member.id] = member
 
     for row in await db.all("SELECT * FROM members WHERE legacy_name <> ''"):
         if strip_discriminator(row["legacy_name"]) == wanted:
@@ -138,6 +152,10 @@ async def upsert_member(db: Database, gamertag: str, discord_id: int | None) -> 
     of them the other's achievements. Now both survive and the caller is told."""
     gamertag = gamertag.strip()
     by_tag = await find_member(db, gamertag)
+    if by_tag is None:
+        loose = await same_gamertag(db, gamertag)      # `BUDMAN008` is `BUDMAN008.`
+        if len(loose) == 1:
+            by_tag = loose[0]
     owner = await find_member(db, discord_id) if discord_id else None
 
     if by_tag:
@@ -210,6 +228,7 @@ async def owned(db: Database, member_id: int, role: str) -> set[str]:
 async def grant(
     db: Database, member: Member, role: str, keys: Sequence[str], actor_id: int, actor_name: str,
     mark: str = "X",     # 'L' marks a legacy, pre-account-wide record
+    evidence: str = "",  # link to the screenshot it was recorded from
 ) -> list[str]:
     """Grants keys plus their prerequisites. Returns only what was actually new."""
     if role not in ALL_ROLES:
@@ -239,6 +258,7 @@ async def grant(
              (member.id, role, k))
             for k in added
         ],
+        evidence=evidence,
     )
     return added
 
@@ -330,7 +350,8 @@ async def points(db: Database, member_id: int) -> int:
 
 
 # --------------------------------------------------------------------------- scores
-async def set_score(db, member: Member, trial_key: str, score: int, actor_id, actor_name) -> None:
+async def set_score(db, member: Member, trial_key: str, score: int, actor_id, actor_name,
+                    evidence: str = "") -> None:
     before = await db.val("SELECT score FROM scores WHERE member_id=? AND trial_key=?",
                           (member.id, trial_key))
     await db.run(
@@ -343,11 +364,11 @@ async def set_score(db, member: Member, trial_key: str, score: int, actor_id, ac
               (before, member.id, trial_key))] if before is not None else
             [("DELETE FROM scores WHERE member_id=? AND trial_key=?", (member.id, trial_key))])
     await log_action(db, actor_id, actor_name, "score",
-                     f"{member.gamertag} {trial_key} = {score:,}", undo=undo)
+                     f"{member.gamertag} {trial_key} = {score:,}", undo=undo, evidence=evidence)
 
 
 async def raise_score(db, member: Member, trial_key: str, score: int,
-                      actor_id, actor_name) -> bool:
+                      actor_id, actor_name, evidence: str = "") -> bool:
     """Record a run's score for one member, but only if it beats what they have.
 
     Every run is posted, good or bad, so a straight overwrite would replace a
@@ -357,11 +378,12 @@ async def raise_score(db, member: Member, trial_key: str, score: int,
                           (member.id, trial_key))
     if before is not None and before >= score:
         return False
-    await set_score(db, member, trial_key, score, actor_id, actor_name)
+    await set_score(db, member, trial_key, score, actor_id, actor_name, evidence)
     return True
 
 
-async def set_parse(db, member: Member, label: str, dps: int, actor_id, actor_name) -> None:
+async def set_parse(db, member: Member, label: str, dps: int, actor_id, actor_name,
+                    evidence: str = "") -> None:
     before = await db.val("SELECT dps FROM parses WHERE member_id=? AND label=?",
                           (member.id, label))
     await db.run(
@@ -374,16 +396,18 @@ async def set_parse(db, member: Member, label: str, dps: int, actor_id, actor_na
             if before is not None else
             [("DELETE FROM parses WHERE member_id=? AND label=?", (member.id, label))])
     await log_action(db, actor_id, actor_name, "parse",
-                     f"{member.gamertag} {label} = {dps:,}", undo=undo)
+                     f"{member.gamertag} {label} = {dps:,}", undo=undo, evidence=evidence)
 
 
 # --------------------------------------------------------------------------- audit
 async def log_action(db: Database, actor_id: int, actor_name: str, action: str,
-                     summary: str, undo: list[tuple[str, Sequence[Any]]] | None = None) -> int:
+                     summary: str, undo: list[tuple[str, Sequence[Any]]] | None = None,
+                     evidence: str = "") -> int:
     cur = await db.run(
-        "INSERT INTO audit_log(actor_id, actor_name, action, summary, undo) VALUES(?,?,?,?,?)",
+        "INSERT INTO audit_log(actor_id, actor_name, action, summary, undo, evidence) "
+        "VALUES(?,?,?,?,?,?)",
         (actor_id, actor_name, action, summary,
-         json.dumps([[s, list(a)] for s, a in (undo or [])])),
+         json.dumps([[s, list(a)] for s, a in (undo or [])]), evidence),
     )
     return cur.lastrowid
 

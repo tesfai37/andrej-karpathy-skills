@@ -78,29 +78,34 @@ class Membership(commands.Cog):
                     "That doesn't look like a gamertag. Letters, numbers, spaces and "
                     "`. _ ' - @` only."), ephemeral=True)
 
-        existing = await store.find_member(self.bot.db, gamertag)
+        existing, matches = await reviews.claim_target(self.bot.db, gamertag)
         if existing is not None and existing.discord_id is not None:
             return await interaction.response.send_message(
                 embed=embeds.error(
-                    f"**{gamertag}** is already linked to another Discord account. "
+                    f"**{existing.gamertag}** is already linked to another Discord account. "
                     "If that's wrong, talk to an officer."), ephemeral=True)
 
         if proof is None or usable_proof([proof]) is None:
             return await interaction.response.send_message(
                 embed=embeds.error(BAD_PROOF), ephemeral=True)
 
+        # A claim names the record the way the roster spells it, so `BUDMAN008`
+        # claims `BUDMAN008.` rather than creating an empty copy of it.
+        subject = existing.gamertag if existing else gamertag
         await interaction.response.defer(ephemeral=True)
         request_id = await self.raise_request(
             interaction, "register", proof, requester_id=interaction.user.id,
-            subject=gamertag,
-            note="claims an existing record" if existing else "new name")
+            subject=subject,
+            note="claims an existing record" if existing
+            else f"matches {len(matches)} roster entries" if matches else "new name")
 
-        held, _ = await reviews.inherits(self.bot.db, gamertag)
-        extra = (f"\n\nBecause **{gamertag}** already has {held} achievements on file, "
+        held, _ = await reviews.inherits(self.bot.db, subject)
+        spelled = "\nThat's how it's written on the roster." if subject != gamertag else ""
+        extra = (f"\n\nBecause **{subject}** already has {held} achievements on file, "
                  "an officer will check this one carefully." if held else "")
         await interaction.followup.send(
             embed=embeds.success(
-                f"Claim `#{request_id}` raised for **{gamertag}**.\n"
+                f"Claim `#{request_id}` raised for **{subject}**.{spelled}\n"
                 f"Nothing is linked until an officer approves it.{extra}"),
             ephemeral=True)
 
@@ -184,9 +189,26 @@ class Membership(commands.Cog):
             (member.id,))
         if row is None:
             return
-        await self.bot.db.run("UPDATE members SET active = 0 WHERE id = ?", (row["id"],))
+        await self.bot.db.run("UPDATE members SET active = 0, left_server = 1 WHERE id = ?",
+                              (row["id"],))
         await self.bot.activity("member left",
                                 f"**{row['gamertag']}** left the server — deactivated")
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        """Coming back switches them back on, the way leaving switched them off.
+        Somebody an officer removed stays removed."""
+        row = await self.bot.db.one(
+            "SELECT id, gamertag FROM members WHERE discord_id = ? AND active = 0 "
+            "AND left_server = 1", (member.id,))
+        if row is None:
+            return
+        await self.bot.db.run("UPDATE members SET active = 1, left_server = 0 WHERE id = ?",
+                              (row["id"],))
+        await self.bot.activity("member returned",
+                                f"**{row['gamertag']}** rejoined the server — back on the roster")
+        await self.bot.sync_roles(member.guild, await store.get_member(self.bot.db, row["id"]),
+                                  "rejoined the server")
 
 
 async def setup(bot):

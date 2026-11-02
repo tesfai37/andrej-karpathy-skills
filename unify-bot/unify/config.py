@@ -44,6 +44,9 @@ SETTING_DEFAULTS: dict[str, tuple[str, object, str]] = {
                              "(an officer still approves, and proof is required)"),
     "activity_channel":     ("channel", 0, "Digest of routine recordings"),
     "problems_channel":     ("channel", 0, "Only things that need a human: errors, blocked posts"),
+    "evidence_channel":     ("channel", 0,
+                             "Where the bot keeps its own copy of the screenshot behind every "
+                             "instant recording (empty = the admin log channel)"),
     "digest_minutes":       ("int",     15, "How often to post the activity digest (minutes)"),
     "briefing_hour":        ("int",     8, "Hour (0-23, UTC) for the morning briefing"),
     "audit_days":           ("int",     365, "How long to keep audit entries (0 = forever)"),

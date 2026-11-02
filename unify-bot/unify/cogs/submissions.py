@@ -10,15 +10,20 @@
 
 Nothing here writes guild data on a member's say-so. Every person in a post is
 routed on their own through reviews.decide: recorded straight away only when a
-trusted recorder posts it for somebody else with every role recognised, and
-otherwise gathered into one request an officer approves. A run's score is one
-number for everybody in it, and is applied automatically only when the person
-posting it wasn't in the run.
+trusted recorder posts it for somebody else, with every role recognised and a
+screenshot attached, in a post that hasn't been edited. Everything else is
+gathered into one request an officer approves. A run's score is one number for
+everybody in it, applied straight away only when the poster wasn't in the run
+and it isn't a new guild best.
+
+Every instant recording leaves the bot's own copy of its screenshot behind, linked
+from the audit log, and about one in twenty goes to an officer as a spot check.
 
 Nobody mentioned in a post is ever dropped without saying so."""
 from __future__ import annotations
 
 import json
+import random
 import re
 from dataclasses import dataclass, field
 
@@ -30,9 +35,10 @@ from ..checks import member_is_recorder, user_is_admin
 from ..config import ROLE_EMOJI, ROLE_LABEL
 from .mapping import MapRoleView
 from .oldcommands import translate
-from .reviewqueue import post_card, usable_proof
+from .reviewqueue import copy_of, post_card, usable_proof
 
 JUMP_RE = re.compile(r"/channels/(\d+)/(\d+)/(\d+)")
+SPOT_CHECK_RATE = 1 / 20      # share of instant recordings an officer looks at afterwards
 
 
 class FixMappingView(discord.ui.View):
@@ -135,6 +141,13 @@ class Submissions(commands.Cog):
         out = Outcome(unknown=unknown)
         mode = await self.bot.setting("submission_mode")
         recorder = await member_is_recorder(self.bot, message.guild, message.author.id)
+        # The two ways a trusted recorder could slip in somebody who wasn't there and
+        # leave nothing to check: editing a post after it's recorded, and posting
+        # without a screenshot. Neither ever records straight away.
+        held = ("added by an edit, so an officer checks it" if message.edited_at is not None
+                else "no screenshot attached, so it can't record straight away"
+                if proof is None else "")
+        instant: list[tuple[store.Member, str]] = []
         review: list[list] = []
         notes: set[str] = set()
 
@@ -149,16 +162,37 @@ class Submissions(commands.Cog):
                     mode, is_recorder=recorder, has_role=bool(role),
                     submitter_id=message.author.id, subject_discord_id=member.discord_id,
                     member_known=True, all_roles_mapped=True)
+                if routing.auto and held:
+                    routing = reviews.Routing(False, held)
                 if routing.auto:
-                    added = await self.record(member, role, parsed.keys, message.author,
-                                              message.guild)
-                    out.recorded.append((member, role, added))
+                    instant.append((member, role))
                 else:
                     review.append([member.id, role])
                     out.waiting.append((member, role))
                     notes.add(routing.note)
 
-        score_payload = await self.score(message, parsed, people, recorder, mode, out, notes)
+        score_now, score_payload = await self.score(message, parsed, people, recorder, mode,
+                                                    held, out, notes)
+
+        evidence = ""
+        if instant or score_now:
+            evidence = await self.keep_evidence(message, parsed, proof, instant, score_now)
+            if not evidence:
+                # Nowhere to keep the copy, so nothing records straight away.
+                notes.add("there's nowhere to keep a copy of the screenshot")
+                for member, role in instant:
+                    review.append([member.id, role])
+                    out.waiting.append((member, role))
+                instant = []
+                if score_now:
+                    score_now, score_payload = False, self.score_request(parsed, people)
+                    out.score_line = f"🏆 {self.score_label(parsed)} — waiting for an officer"
+
+        for member, role in instant:
+            added = await self.record(member, role, parsed.keys, message.author,
+                                      message.guild, evidence)
+            out.recorded.append((member, role, added))
+        raised = await self.apply_score(message, parsed, people, out, evidence) if score_now else []
 
         if review or score_payload:
             payload = {"keys": parsed.keys, "members": review, **(score_payload or {})}
@@ -170,46 +204,107 @@ class Submissions(commands.Cog):
                     proof_url=proof.url if proof else "", source_url=message.jump_url,
                     note="; ".join(sorted(notes)))
 
-        await self.report(message, parsed, out, proof)
+        await self.report(message, parsed, out, proof, evidence)
+        if evidence and random.random() < SPOT_CHECK_RATE:
+            await self.spot_check(message, parsed, proof, out, raised, evidence)
 
-    async def score(self, message, parsed, people, recorder, mode, out, notes) -> dict | None:
-        """A run's score is one number for everybody in the run. It's applied here
-        only when a recorder posts it for a run they weren't in; otherwise it rides
-        along on the request for an officer."""
+    @staticmethod
+    def score_label(parsed: parsing.Parsed) -> str:
+        return f"{parsed.score_trial} score **{parsed.score:,}**"
+
+    @staticmethod
+    def score_request(parsed: parsing.Parsed, people) -> dict:
+        return {"score": parsed.score, "trial": parsed.score_trial,
+                "score_members": [m.id for m, _ in people]}
+
+    async def score(self, message, parsed, people, recorder, mode, held, out, notes):
+        """What happens to a run's score: (apply it now?, the request payload if not).
+
+        A run's score is one number for everybody in it. It applies straight away
+        only when a recorder posts it, with a screenshot, for a run they weren't in,
+        and it isn't a new guild best: a typo there would top the leaderboard."""
         if parsed.score is None:
-            return None
+            return False, None
         if parsed.score_note or not parsed.score or not parsed.score_trial:
             out.score_ok = False
             out.score_line = (f"⚠️ score not recorded — {parsed.score_note or 'unreadable'}. "
                               "Post it as e.g. `vss score 257,498`.")
-            return None
-        everyone = [m for m, _ in people]
-        if not everyone:
-            return None
-        in_run = any(m.discord_id == message.author.id for m in everyone)
-        label = f"{parsed.score_trial} score **{parsed.score:,}**"
-
-        if recorder and not in_run and mode != "review":
-            raised = kept = 0
-            for member in everyone:
-                if await store.raise_score(self.bot.db, member, parsed.score_trial,
-                                           parsed.score, message.author.id,
-                                           str(message.author)):
-                    raised += 1
-                    await self.notify_score(member, parsed.score_trial, parsed.score)
-                else:
-                    kept += 1
-            out.score_line = (f"🏆 {label} for {raised}"
-                              + (f" · {kept} already had a better one" if kept else ""))
-            out.score_recorded = True
-            return None
-
+            return False, None
+        if not people:
+            return False, None
+        in_run = any(m.discord_id == message.author.id for m, _ in people)
+        best = await self.bot.db.val("SELECT MAX(score) FROM scores WHERE trial_key = ?",
+                                     (parsed.score_trial,))
+        guild_best = best is None or parsed.score > best
+        if recorder and not in_run and mode != "review" and not held and not guild_best:
+            return True, None
         notes.add("the score is for a run you were in" if in_run
                   else "every submission is reviewed here" if mode == "review"
-                  else "submitted by someone who isn't a recorder")
-        out.score_line = f"🏆 {label} — waiting for an officer"
-        return {"score": parsed.score, "trial": parsed.score_trial,
-                "score_members": [m.id for m in everyone]}
+                  else "submitted by someone who isn't a recorder" if not recorder
+                  else held or f"a new guild best for {parsed.score_trial}, so an officer "
+                               "checks it")
+        out.score_line = f"🏆 {self.score_label(parsed)} — waiting for an officer"
+        return False, self.score_request(parsed, people)
+
+    async def apply_score(self, message, parsed, people, out, evidence) -> list[store.Member]:
+        """Give the run's score to everyone in it who doesn't already have better."""
+        raised, kept = [], 0
+        for member, _ in people:
+            if await store.raise_score(self.bot.db, member, parsed.score_trial, parsed.score,
+                                       message.author.id, str(message.author), evidence):
+                raised.append(member)
+                await self.notify_score(member, parsed.score_trial, parsed.score)
+            else:
+                kept += 1
+        out.score_line = (f"🏆 {self.score_label(parsed)} for {len(raised)}"
+                          + (f" · {kept} already had a better one" if kept else ""))
+        out.score_recorded = True
+        return raised
+
+    async def keep_evidence(self, message, parsed, proof, instant, score_now) -> str:
+        """The bot's own copy of the screenshot behind an instant recording, so the
+        evidence survives the post being edited or deleted. Returns a link to the
+        copy, or "" when there's nowhere to keep one."""
+        channel = await self.bot.channel_for("evidence_channel", "audit_channel")
+        file = await copy_of(proof, "evidence") if channel is not None else None
+        if file is None:
+            return ""
+        e = discord.Embed(
+            title="📎  Evidence",
+            description=f"{message.author.mention} recorded this straight away from "
+                        f"[their post]({message.jump_url}).",
+            color=self.bot.brand.color, timestamp=discord.utils.utcnow())
+        if instant:
+            e.add_field(name="Recorded", value=embeds.lines_within([", ".join(
+                f"{m.gamertag} {ROLE_EMOJI.get(r, '')}" for m, r in instant)]), inline=False)
+        if parsed.keys:
+            e.add_field(name="Achievements", value=", ".join(parsed.keys), inline=True)
+        if score_now:
+            e.add_field(name="Score", value=self.score_label(parsed), inline=True)
+        e.set_image(url=f"attachment://{file.filename}")
+        try:
+            sent = await channel.send(embed=e, file=file)
+        except discord.HTTPException:
+            return ""
+        return sent.jump_url
+
+    async def spot_check(self, message, parsed, proof, out, raised, evidence) -> None:
+        """About one instant recording in twenty goes to an officer afterwards. It
+        costs a few clicks a week, and no recorder can count on going unseen."""
+        recorded = [[m.id, r, added] for m, r, added in out.recorded if added]
+        if not recorded and not raised:
+            return
+        payload = {"evidence": evidence, "recorded": recorded, "keys": parsed.keys}
+        if raised:
+            payload.update(score=parsed.score, trial=parsed.score_trial,
+                           score_raised=[m.id for m in raised])
+        request_id = await reviews.open_request(
+            self.bot.db, "check", requester_id=message.author.id, payload=payload,
+            proof_url=proof.url, source_url=message.jump_url, note="a random spot check")
+        channel = await self.bot.channel_for("audit_channel", "problems_channel")
+        if channel is not None:
+            await post_card(self.bot, await reviews.get(self.bot.db, request_id),
+                            proof=proof, channel=channel)
 
     async def people(self, parsed: parsing.Parsed) -> tuple[list, list[int]]:
         """Everybody the post is for, each with their role.
@@ -235,7 +330,7 @@ class Submissions(commands.Cog):
         return [], []
 
     # ------------------------------------------------------------------ telling people
-    async def report(self, message, parsed, out: Outcome, proof) -> None:
+    async def report(self, message, parsed, out: Outcome, proof, evidence: str = "") -> None:
         """One summary reply, plus a card when something needs an officer."""
         lines = []
         if out.recorded:
@@ -279,7 +374,8 @@ class Submissions(commands.Cog):
                 "run recorded",
                 f"{message.author.display_name}: " + ", ".join(
                     m.gamertag for m, _, _ in out.recorded)
-                + f" · {', '.join(parsed.keys)}")
+                + f" · {', '.join(parsed.keys)}"
+                + (f" · [evidence]({evidence})" if evidence else ""))
         if out.unknown:
             await self.bot.problem(
                 "Submission names people who aren't on the roster",
@@ -309,8 +405,9 @@ class Submissions(commands.Cog):
             f"{names} — request `#{request_id}` is waiting. `/map role` fixes it.")
 
     # ------------------------------------------------------------------ helpers
-    async def record(self, member, role, keys, actor, guild) -> list[str]:
-        added = await store.grant(self.bot.db, member, role, keys, actor.id, str(actor))
+    async def record(self, member, role, keys, actor, guild, evidence: str = "") -> list[str]:
+        added = await store.grant(self.bot.db, member, role, keys, actor.id, str(actor),
+                                  evidence=evidence)
         if added:
             await self.bot.sync_roles(guild, member, f"earned {', '.join(added)}")
             await self.notify(member, role, added)

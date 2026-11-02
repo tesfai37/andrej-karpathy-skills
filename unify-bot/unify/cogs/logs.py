@@ -32,11 +32,17 @@ async def recorder_week(db) -> list[str]:
         "FROM member_achievements ma JOIN achievements a ON a.key = ma.achievement_key "
         "WHERE ma.granted_by IS NOT NULL AND ma.granted_at >= datetime('now', '-7 days') "
         "GROUP BY ma.granted_by ORDER BY recorded DESC")
+    # Scores are overwritten by better ones, so they're counted from the audit log.
+    scores = {r[0]: r[1] for r in await db.all(
+        "SELECT actor_id, COUNT(*) FROM audit_log WHERE action = 'score' AND undone = 0 "
+        "AND actor_id IS NOT NULL AND ts >= datetime('now', '-7 days') GROUP BY actor_id")}
     lines = []
     for r in rows:
         line = (f"<@{r['who']}> — **{r['recorded']}** achievements for **{r['people']}** "
                 f"{'person' if r['people'] == 1 else 'people'}"
-                + (f" · {r['titles']} title{'s' if r['titles'] != 1 else ''}" if r["titles"] else ""))
+                + (f" · {r['titles']} title{'s' if r['titles'] != 1 else ''}" if r["titles"] else "")
+                + (f" · {scores[r['who']]} score{'s' if scores[r['who']] != 1 else ''}"
+                   if r["who"] in scores else ""))
         if r["recorded"] >= 10:
             top = await db.all(
                 "SELECT m.gamertag, COUNT(*) AS n FROM member_achievements ma "
@@ -48,6 +54,10 @@ async def recorder_week(db) -> list[str]:
                 line += (f"\n  ⚠️ {share:.0%} of it went to "
                          f"{', '.join(t['gamertag'] for t in top)} — worth a look")
         lines.append(line)
+    recorders = {r["who"] for r in rows}
+    for who, n in sorted(scores.items(), key=lambda item: -item[1]):
+        if who not in recorders:
+            lines.append(f"<@{who}> — **{n}** score{'s' if n != 1 else ''}")
     return lines
 
 

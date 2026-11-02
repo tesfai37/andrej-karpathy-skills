@@ -202,11 +202,16 @@ class Admin(commands.Cog):
         if not view.result:
             return await interaction.edit_original_response(
                 embed=embeds.info(self.bot.brand, "Cancelled."), view=None)
-        await self.bot.db.run("UPDATE members SET active = 0 WHERE id = ?", (member.id,))
+        left = await self.bot.db.val("SELECT left_server FROM members WHERE id = ?",
+                                     (member.id,), 0)
+        # left_server = 0 marks it as an officer's decision, so rejoining won't undo it
+        await self.bot.db.run("UPDATE members SET active = 0, left_server = 0 WHERE id = ?",
+                              (member.id,))
         entry = await store.log_action(
             self.bot.db, interaction.user.id, str(interaction.user), "member remove",
             member.gamertag,
-            undo=[("UPDATE members SET active = 1 WHERE id = ?", (member.id,))])
+            undo=[("UPDATE members SET active = ?, left_server = ? WHERE id = ?",
+                   (member.active, left, member.id))])
         await self.bot.audit(interaction.user, "member removed", member.gamertag, entry)
         await interaction.edit_original_response(
             embed=embeds.success(f"**{member.gamertag}** removed."), view=None)
@@ -432,6 +437,7 @@ class Admin(commands.Cog):
         lines = [
             f"`#{r['id']}` **{r['action']}** — {r['summary']}\n"
             f"　　_{r['actor_name']} · {r['ts']}_" + ("  ↩️ undone" if r["undone"] else "")
+            + (f"  📎 [evidence]({r['evidence']})" if r["evidence"] else "")
             for r in rows
         ]
         criteria = "  ·  ".join(filter(None, [

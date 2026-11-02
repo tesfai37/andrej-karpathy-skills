@@ -895,6 +895,7 @@ class FakeMember:
 
 class FakeServer:
     def __init__(self, people):
+        self.id = 1
         self.people = {p.id: p for p in people}
         self.members = list(people)
 
@@ -913,6 +914,7 @@ class FakeSent:
     def __init__(self, n, kwargs):
         from types import SimpleNamespace
         self.id, self.channel, self.kwargs = n, SimpleNamespace(id=2), kwargs
+        self.jump_url = f"https://discord.com/channels/1/2/{n}"
 
 
 class FakePost:
@@ -925,6 +927,7 @@ class FakePost:
         self.attachments = list(attachments)
         self.jump_url = f"https://discord.com/channels/1/2/{self.id}"
         self.reactions, self.replies = [], []
+        self.edited_at = None
 
     async def add_reaction(self, emoji):
         self.reactions.append(emoji)
@@ -986,6 +989,7 @@ class FakeInteraction:
     def __init__(self, user, client=None):
         from types import SimpleNamespace
         self.user, self.client, self.said, self.sent, self.deferred = user, client, [], [], False
+        self.guild = None
 
         async def send_message(**kwargs):
             self.said.append(kwargs["embed"])
@@ -1003,6 +1007,9 @@ class FakeInteraction:
 
     async def original_response(self):
         return None
+
+    async def edit_original_response(self, **kwargs):
+        self.sent.append(kwargs)
 
 
 async def test_runs_end_to_end() -> None:
@@ -1027,6 +1034,7 @@ async def test_runs_end_to_end() -> None:
         server = FakeServer([lead, outsider_lead, pleb])
 
         bot = FakeBot(db)
+        bot.channel = FakeChannel()
         cog = Submissions(bot)
         bot.cogs["Submissions"] = cog
         mention = " ".join(f"<@{d}>" for d in ids)
@@ -1035,7 +1043,8 @@ async def test_runs_end_to_end() -> None:
             return await db.all("SELECT * FROM requests WHERE status='pending'")
 
         # 1. a recorder posts a run they weren't in
-        post = FakePost(f"{mention} dps <@&706551987799728168>", outsider_lead, server)
+        post = FakePost(f"{mention} dps <@&706551987799728168>", outsider_lead, server,
+                        [FakeShot()])
         await cog.handle(post)
         held = [len(await store.owned(db, r.id, "dps")) for r in raiders]
         check("a lead posting a full run records all twelve, not one",
@@ -1045,7 +1054,7 @@ async def test_runs_end_to_end() -> None:
 
         # 2. a recorder posts a run they were in: everyone else applies, they wait
         await db.run("DELETE FROM member_achievements")
-        post = FakePost(f"{mention} dps <@&706551987799728168>", lead, server)
+        post = FakePost(f"{mention} dps <@&706551987799728168>", lead, server, [FakeShot()])
         await cog.handle(post)
         mine = await store.owned(db, raiders[0].id, "dps")
         others = [len(await store.owned(db, r.id, "dps")) for r in raiders[1:]]
@@ -1089,7 +1098,7 @@ async def test_runs_end_to_end() -> None:
         await db.run("DELETE FROM requests")
         stranger = 788888888888888888
         post = FakePost(f"<@{ids[1]}> <@{stranger}> tank <@&706551987799728168>",
-                        outsider_lead, server)
+                        outsider_lead, server, [FakeShot()])
         await cog.handle(post)
         said = post.replies[0].kwargs["embed"].description
         check("someone not on the roster is reported by name",
@@ -1116,11 +1125,12 @@ async def test_run_scores() -> None:
         insider = FakeMember(ids[0], roles=[type("R", (), {"id": LEAD_ROLE})()])
         server = FakeServer([outsider, insider])
         bot = FakeBot(db)
+        bot.channel = FakeChannel()
         cog = Submissions(bot)
         bot.cogs["Submissions"] = cog
         roster = "dps: " + " ".join(f"<@{d}>" for d in ids)
 
-        await cog.handle(FakePost(f"vss score 257,498\n{roster}", outsider, server))
+        await cog.handle(FakePost(f"vss score 257,498\n{roster}", outsider, server, [FakeShot()]))
         scores = [await db.val("SELECT score FROM scores WHERE member_id=? AND trial_key='vss'",
                                (r.id,)) for r in raiders]
         check("a recorder's run score lands on all twelve at once",
@@ -1199,6 +1209,7 @@ async def test_edits() -> None:
         async def edit(text):
             after = FakePost(text, poster, server)
             after.jump_url, after.channel = post.jump_url, post.channel
+            after.edited_at = "just now"
             before = type("B", (), {"content": "previous"})()
             await cog.on_message_edit(before, after)
 
@@ -1588,6 +1599,266 @@ async def test_old_commands() -> None:
         await db.close()
 
 
+async def test_dot_claims() -> None:
+    """96% of the roster ends in a dot, and members type their gamertag without
+    it. A claim used to miss their record and create an empty copy."""
+    print("\nclaims and the trailing dot")
+    from unify.cogs.membership import Membership
+    from unify.cogs.reviewqueue import approve_one, describe
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        bot = FakeBot(db)
+        bot.channel = FakeChannel()
+        cog = Membership(bot)
+        veteran = await store.create_member(db, "BUDMAN008.", None)
+        await store.grant(db, veteran, "dps", ["vss"], 1, "t")
+        before = await db.val("SELECT COUNT(*) FROM members", (), 0)
+
+        check("the dot is forgiven", [m.gamertag for m in await store.same_gamertag(db, "budman008")]
+              == ["BUDMAN008."])
+        check("…and nothing else is", await store.same_gamertag(db, "BUDMAN00") == []
+              and await store.same_gamertag(db, "BUDMAN0088") == [])
+
+        member = FakeMember(791000000000000001)
+        said = FakeInteraction(member, bot)
+        await cog.claim(said, "BUDMAN008", FakeShot())
+        row = await db.one("SELECT * FROM requests WHERE kind = 'register'")
+        check("a claim without the dot names the roster's record",
+              row["subject"] == "BUDMAN008." and row["note"] == "claims an existing record",
+              f"{row['subject']} / {row['note']}")
+        check("…and tells the member how the roster spells it",
+              "written on the roster" in said.said[-1].description)
+        line = await describe(bot, row)
+        check("the officer's card shows what it would inherit", "would inherit" in line, line)
+        result = await approve_one(bot, row, FakeMember(1, admin=True), FakeServer([]))
+        linked = await store.find_member(db, member.id)
+        check("approving it links the existing record, with its clears",
+              result.ok and linked is not None and linked.id == veteran.id, result.summary)
+        check("…and creates no copy", await db.val("SELECT COUNT(*) FROM members", (), 0) == before)
+
+        upsert = await store.upsert_member(db, "budman008", None)
+        check("/member add without the dot finds the record too",
+              not upsert.created and upsert.member.id == veteran.id)
+
+        await store.create_member(db, "a hos3r eh", None)
+        await store.create_member(db, "a hos3r eh.", None)
+        other = FakeMember(791000000000000002)
+        said = FakeInteraction(other, bot)
+        await cog.claim(said, "a hos3r eh", FakeShot())
+        row = await db.one("SELECT * FROM requests WHERE kind = 'register' AND requester_id = ?",
+                           (other.id,))
+        line = await describe(bot, row)
+        check("a claim that matches two dot-twins warns the officer", "merge" in line, line)
+        refused = await approve_one(bot, row, FakeMember(1, admin=True), FakeServer([]))
+        check("…and can't be approved until they're merged",
+              not refused.ok and "/member merge" in refused.summary, refused.summary)
+
+        taken = await store.create_member(db, "TAKEN.", 791000000000000099)
+        said = FakeInteraction(FakeMember(791000000000000003), bot)
+        await cog.claim(said, "taken", FakeShot())
+        check("a record linked to someone else can't be claimed by leaving the dot off",
+              "already linked" in said.said[-1].description
+              and await store.find_member(db, 791000000000000003) is None and taken)
+        await db.close()
+
+
+async def test_rejoining() -> None:
+    """Leaving switched a member off, and nothing ever switched them back on, so a
+    returning raider vanished from /find and the leaderboards for good."""
+    print("\nleaving and coming back")
+    from unify import views
+    from unify.cogs.admin import Admin
+    from unify.cogs.membership import Membership
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        bot = FakeBot(db)
+        cog = Membership(bot)
+        raider = await store.create_member(db, "RETURNER.", 792000000000000001)
+        person = FakeMember(raider.discord_id)
+        person.guild = None
+
+        async def active(member_id):
+            return await db.val("SELECT active FROM members WHERE id = ?", (member_id,))
+
+        await cog.on_member_remove(person)
+        check("leaving the server switches them off", await active(raider.id) == 0)
+        await cog.on_member_join(person)
+        check("coming back switches them on again", await active(raider.id) == 1)
+        check("…and says so in the activity log", bot.acts[-1][0] == "member returned")
+
+        class Yes:
+            def __init__(self, *a, **k):
+                self.result = True
+
+            async def wait(self):
+                return None
+
+        removed = await store.create_member(db, "REMOVED.", 792000000000000002)
+        officer = FakeInteraction(FakeMember(1, admin=True), bot)
+        real_confirm, views.Confirm = views.Confirm, Yes
+        try:
+            await Admin(bot).member_remove.callback(Admin(bot), officer, "REMOVED.")
+        finally:
+            views.Confirm = real_confirm
+        check("an officer can still remove someone", await active(removed.id) == 0)
+        leaver = FakeMember(removed.discord_id)
+        leaver.guild = None
+        await cog.on_member_remove(leaver)
+        await cog.on_member_join(leaver)
+        check("…and leaving and rejoining doesn't undo that", await active(removed.id) == 0)
+        entry = await db.val("SELECT id FROM audit_log WHERE action = 'member remove'")
+        await store.undo_action(db, entry)
+        check("/undo of the removal puts them back as they were", await active(removed.id) == 1)
+        await db.close()
+
+
+async def test_recorder_safeguards() -> None:
+    """The last ways a trusted recorder could slip somebody in and leave nothing
+    behind to check."""
+    print("\nsafeguards on instant recordings")
+    import unify.cogs.submissions as submissions
+    from unify.cogs.logs import recorder_week
+    from unify.cogs.reviewqueue import approve_one, reject_one
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        await db.run("INSERT INTO role_map VALUES(706551987799728168,'achievement','extinguisher','vSS HM')")
+        LEAD_ROLE = 555000000000000001
+        await db.set_setting("recorder_roles", [LEAD_ROLE])
+        a = await store.create_member(db, "SAFE A.", 793000000000000001)
+        b = await store.create_member(db, "SAFE B.", 793000000000000002)
+        c = await store.create_member(db, "SAFE C.", 793000000000000003)
+        lead = FakeMember(793000000000000009, roles=[type("R", (), {"id": LEAD_ROLE})()])
+        server = FakeServer([lead])
+        bot = FakeBot(db)
+        cog = submissions.Submissions(bot)
+        bot.cogs["Submissions"] = cog
+        officer = FakeMember(1, admin=True)
+
+        async def pending():
+            return await db.all("SELECT * FROM requests WHERE status = 'pending' ORDER BY id")
+
+        async def clears(member):
+            return len(await store.owned(db, member.id, "dps"))
+
+        async def wipe():
+            await db.run("DELETE FROM member_achievements")
+            await db.run("DELETE FROM requests")
+            await db.run("DELETE FROM scores")
+
+        # no screenshot: waits, even from a recorder
+        bot.channel = FakeChannel()
+        await cog.handle(FakePost(f"<@{a.discord_id}> dps <@&706551987799728168>", lead, server))
+        rows = await pending()
+        check("a recorder's post with no screenshot waits for an officer",
+              await clears(a) == 0 and len(rows) == 1 and "no screenshot" in rows[0]["note"],
+              rows[0]["note"] if rows else "nothing queued")
+
+        # nowhere to keep the copy: waits
+        await wipe()
+        bot.channel = None
+        await cog.handle(FakePost(f"<@{a.discord_id}> dps <@&706551987799728168>", lead, server,
+                                  [FakeShot()]))
+        rows = await pending()
+        check("with nowhere to keep a copy of the screenshot, it waits too",
+              await clears(a) == 0 and rows and "nowhere to keep a copy" in rows[0]["note"])
+
+        # the copy is kept, and every change links to it
+        await wipe()
+        bot.channel = FakeChannel()
+        post = FakePost(f"<@{a.discord_id}> <@{b.discord_id}> dps <@&706551987799728168>", lead,
+                        server, [FakeShot()])
+        await cog.handle(post)
+        copy = bot.channel.sent[0]
+        links = {r[0] for r in await db.all("SELECT evidence FROM audit_log WHERE action = 'grant'")}
+        check("an instant recording keeps the bot's own copy of the screenshot",
+              "file" in copy.kwargs and copy.kwargs["embed"].image.url.startswith("attachment://"))
+        check("…and links every change to that copy", links == {copy.jump_url}, str(links))
+        check("…and the activity digest links it too", copy.jump_url in bot.acts[-1][1])
+
+        # an edit adds somebody: they wait
+        edited = FakePost(f"<@{a.discord_id}> <@{b.discord_id}> <@{c.discord_id}> dps "
+                          "<@&706551987799728168>", lead, server, [FakeShot()])
+        edited.jump_url, edited.edited_at = post.jump_url, "just now"
+        edited.channel = type("C", (), {"id": 2, "mention": "#subs"})()
+        bot.overrides["submissions_channel"] = 2
+        await cog.on_message_edit(type("B", (), {"content": "before"})(), edited)
+        rows = await pending()
+        check("somebody added by an edit waits for an officer",
+              await clears(c) == 0 and rows and "added by an edit" in rows[-1]["note"]
+              and json.loads(rows[-1]["payload"])["members"] == [[c.id, "dps"]])
+        check("…while the people already recorded stay recorded",
+              await clears(a) == 5 and await clears(b) == 5)
+
+        # a new guild best waits
+        await wipe()
+        await store.set_score(db, c, "vss", 200000, 1, "t")
+        roster = f"dps: <@{a.discord_id}> <@{b.discord_id}>"
+        await cog.handle(FakePost(f"vss score 2,574,980\n{roster}", lead, server, [FakeShot()]))
+        rows = await pending()
+        check("a score that would beat the guild best waits for an officer",
+              await db.val("SELECT COUNT(*) FROM scores", (), 0) == 1
+              and rows and "new guild best" in rows[0]["note"], rows[0]["note"] if rows else "")
+        await db.run("DELETE FROM requests")
+        await cog.handle(FakePost(f"vss score 190,000\n{roster}", lead, server, [FakeShot()]))
+        check("…while an ordinary score still records straight away",
+              await db.val("SELECT COUNT(*) FROM scores WHERE score = 190000", (), 0) == 2)
+
+        # spot checks: Reject undoes the whole post, Approve changes nothing
+        await wipe()
+        await store.set_score(db, c, "vss", 200000, 1, "t")      # so 150,000 isn't a guild best
+        await store.set_score(db, b, "vss", 100000, 1, "t")      # b's old score comes back
+        submissions.SPOT_CHECK_RATE, rate = 1.0, submissions.SPOT_CHECK_RATE
+        try:
+            bot.channel = FakeChannel()
+            await cog.handle(FakePost(f"vss score 150,000\n<@{a.discord_id}> <@{b.discord_id}> "
+                                      "dps <@&706551987799728168>", lead, server, [FakeShot()]))
+            check("…the run recorded straight away, score and all",
+                  await clears(a) == 5 and await db.val(
+                      "SELECT COUNT(*) FROM scores WHERE score = 150000", (), 0) == 2)
+            check_row = await db.one("SELECT * FROM requests WHERE kind = 'check'")
+            card_sent = bot.channel.sent[-1].kwargs
+            check("an instant recording can be picked for a spot check",
+                  check_row is not None and "file" in card_sent
+                  and "Reject** undoes" in "".join(f.value for f in card_sent["embed"].fields))
+            summary = await reject_one(bot, check_row, officer, server)
+            scores = {r[0]: r[1] for r in await db.all("SELECT member_id, score FROM scores")}
+            check("rejecting the spot check undoes everything that post recorded",
+                  await clears(a) == 0 and await clears(b) == 0 and a.id not in scores
+                  and summary == "undid 4 changes", summary)
+            check("…putting back the scores it replaced, and nobody else's",
+                  scores.get(b.id) == 100000 and scores.get(c.id) == 200000, str(scores))
+
+            await wipe()
+            await cog.handle(FakePost(f"<@{a.discord_id}> dps <@&706551987799728168>", lead,
+                                      server, [FakeShot()]))
+            check_row = await db.one("SELECT * FROM requests WHERE kind = 'check'")
+            result = await approve_one(bot, check_row, officer, server)
+            check("approving a spot check leaves the recording alone",
+                  result.ok and await clears(a) == 5)
+        finally:
+            submissions.SPOT_CHECK_RATE = rate
+
+        # an approval links the card the officer looked at
+        await wipe()
+        member_post = FakePost(f"<@{a.discord_id}> dps <@&706551987799728168>", FakeMember(5),
+                               server, [FakeShot()])
+        await cog.handle(member_post)
+        row = (await pending())[0]
+        await approve_one(bot, row, officer, server)
+        link = await db.val("SELECT evidence FROM audit_log WHERE action = 'grant' "
+                            "ORDER BY id DESC LIMIT 1")
+        check("an approved request links to its card",
+              link == f"https://discord.com/channels/1/{row['channel_id']}/{row['message_id']}",
+              link)
+
+        # the Monday check counts scores
+        await store.set_score(db, b, "vss", 123, lead.id, "lead")
+        week = await recorder_week(db)
+        check("the Monday check counts scores too",
+              any(str(lead.id) in line and "score" in line for line in week), str(week))
+        await db.close()
+
+
 async def main() -> None:
     await test_command_tree()
     await test_prerequisites()
@@ -1621,6 +1892,9 @@ async def main() -> None:
     await test_folded_commands()
     await test_claim_button()
     await test_old_commands()
+    await test_dot_claims()
+    await test_rejoining()
+    await test_recorder_safeguards()
     print()
     if failures:
         print(f"{len(failures)} check(s) failed: {', '.join(failures)}")

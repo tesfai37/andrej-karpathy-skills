@@ -12,15 +12,17 @@ from typing import Any, Sequence
 from . import store
 from .db import Database
 
-KINDS = ("run", "achievements", "register", "score", "parse")
+KINDS = ("run", "achievements", "register", "score", "parse", "check")
 KIND_LABEL = {
     "run": "Run",
     "achievements": "Achievements",
     "register": "Roster claim",
     "score": "Trial score",
     "parse": "Parse",
+    "check": "Spot check",
 }
-KIND_EMOJI = {"run": "⚔️", "achievements": "🏅", "register": "👤", "score": "🏆", "parse": "📈"}
+KIND_EMOJI = {"run": "⚔️", "achievements": "🏅", "register": "👤", "score": "🏆", "parse": "📈",
+              "check": "🔍"}
 ROLES_FOR_CLEARS = ("tank", "healer", "dps")
 
 
@@ -194,16 +196,19 @@ class Applied:
     run: "RunResult | None" = None
 
 
-async def apply(db: Database, row, actor_id: int, actor_name: str) -> Applied:
+async def apply(db: Database, row, actor_id: int, actor_name: str,
+                evidence: str = "") -> Applied:
     """Carry out an approved request. Re-checks everything: the world may have
-    moved since it was raised."""
+    moved since it was raised. `evidence` links what the officer looked at."""
     kind = row["kind"]
     payload = json.loads(row["payload"] or "{}")
 
     if kind == "register":
-        return await _apply_register(db, row, payload, actor_id, actor_name)
+        return await _apply_register(db, row, payload, actor_id, actor_name, evidence)
     if kind == "run":
-        return await _apply_run(db, payload, actor_id, actor_name)
+        return await _apply_run(db, payload, actor_id, actor_name, evidence)
+    if kind == "check":
+        return Applied(True, "checked, and it looks right")
 
     member = await store.get_member(db, row["member_id"]) if row["member_id"] else None
     if member is None:
@@ -213,7 +218,8 @@ async def apply(db: Database, row, actor_id: int, actor_name: str) -> Applied:
         if row["role"] not in ROLES_FOR_CLEARS:
             return Applied(False, "no role is set yet - pick Tank, Healer or DPS on the card")
         keys = payload.get("keys", [])
-        added = await store.grant(db, member, row["role"], keys, actor_id, actor_name)
+        added = await store.grant(db, member, row["role"], keys, actor_id, actor_name,
+                                  evidence=evidence)
         return Applied(True,
                        ", ".join(added) if added else "already had all of these",
                        member)
@@ -222,12 +228,12 @@ async def apply(db: Database, row, actor_id: int, actor_name: str) -> Applied:
         trial, score = payload.get("trial", ""), int(payload.get("score", 0))
         if not await db.one("SELECT 1 FROM trials WHERE key = ?", (trial,)):
             return Applied(False, f"`{trial}` is no longer a trial I know")
-        await store.set_score(db, member, trial, score, actor_id, actor_name)
+        await store.set_score(db, member, trial, score, actor_id, actor_name, evidence)
         return Applied(True, f"{trial} = {score:,}", member)
 
     if kind == "parse":
         label, dps = payload.get("label", ""), int(payload.get("dps", 0))
-        await store.set_parse(db, member, label, dps, actor_id, actor_name)
+        await store.set_parse(db, member, label, dps, actor_id, actor_name, evidence)
         return Applied(True, f"{label} = {dps:,}", member)
 
     return Applied(False, f"I don't know how to apply a '{kind}' request")
@@ -243,7 +249,7 @@ class RunResult:
 
 
 async def apply_run_parts(db: Database, payload: dict, actor_id: int,
-                          actor_name: str) -> RunResult:
+                          actor_name: str, evidence: str = "") -> RunResult:
     """The shared work of recording a run: clears per person under their own role,
     and the run's score for everyone in it, best score winning."""
     out = RunResult()
@@ -257,7 +263,8 @@ async def apply_run_parts(db: Database, payload: dict, actor_id: int,
             out.no_role.append(member)
             continue
         if keys:
-            added = await store.grant(db, member, role, keys, actor_id, actor_name)
+            added = await store.grant(db, member, role, keys, actor_id, actor_name,
+                                      evidence=evidence)
             out.recorded.append((member, role, added))
 
     score, trial = payload.get("score"), payload.get("trial", "")
@@ -266,12 +273,14 @@ async def apply_run_parts(db: Database, payload: dict, actor_id: int,
             member = await store.get_member(db, member_id)
             if member is None:
                 continue
-            raised = await store.raise_score(db, member, trial, int(score), actor_id, actor_name)
+            raised = await store.raise_score(db, member, trial, int(score), actor_id, actor_name,
+                                             evidence)
             (out.score_raised if raised else out.score_kept).append(member)
     return out
 
 
-async def _apply_run(db: Database, payload: dict, actor_id: int, actor_name: str) -> Applied:
+async def _apply_run(db: Database, payload: dict, actor_id: int, actor_name: str,
+                     evidence: str = "") -> Applied:
     if payload.get("unmapped"):
         return Applied(False, "this post is waiting on a role mapping - map the role "
                               "and it comes back automatically")
@@ -283,7 +292,7 @@ async def _apply_run(db: Database, payload: dict, actor_id: int, actor_name: str
         return Applied(False, "nobody on this run has a role yet - pick Tank, Healer or "
                               "DPS on the card first")
 
-    result = await apply_run_parts(db, payload, actor_id, actor_name)
+    result = await apply_run_parts(db, payload, actor_id, actor_name, evidence)
     bits = []
     if result.recorded:
         new = sum(1 for _, _, added in result.recorded if added)
@@ -328,7 +337,7 @@ def needs_role(row) -> bool:
 
 
 async def _apply_register(db: Database, row, payload: dict,
-                          actor_id: int, actor_name: str) -> Applied:
+                          actor_id: int, actor_name: str, evidence: str = "") -> Applied:
     """Linking a Discord account to a gamertag. Re-validated at approval time so
     a claim raised while the name was free cannot land after somebody else took it."""
     gamertag = (row["subject"] or "").strip()
@@ -336,13 +345,18 @@ async def _apply_register(db: Database, row, payload: dict,
     if not gamertag:
         return Applied(False, "the claim has no gamertag on it")
 
+    existing, matches = await claim_target(db, gamertag)
+    if len(matches) > 1:
+        return Applied(False, f"**{gamertag}** matches {len(matches)} roster entries: "
+                              + ", ".join(f"**{m.gamertag}**" for m in matches)
+                              + " — merge them with `/member merge` first.")
+
     holder = await store.find_member(db, claimant)
-    if holder is not None and holder.gamertag.lower() != gamertag.lower():
+    if holder is not None and (existing is None or holder.id != existing.id):
         return Applied(False, f"that Discord account is already **{holder.gamertag}**")
 
-    existing = await store.find_member(db, gamertag)
     if existing is not None and existing.discord_id not in (None, claimant):
-        return Applied(False, f"**{gamertag}** is already linked to another account")
+        return Applied(False, f"**{existing.gamertag}** is already linked to another account")
 
     if existing is None:
         member = await store.create_member(db, gamertag, claimant)
@@ -355,14 +369,23 @@ async def _apply_register(db: Database, row, payload: dict,
 
     await store.log_action(
         db, actor_id, actor_name, "roster claim", f"{gamertag} -> <@{claimant}>",
-        undo=[("UPDATE members SET discord_id = NULL WHERE id = ?", (member.id,))])
+        undo=[("UPDATE members SET discord_id = NULL WHERE id = ?", (member.id,))],
+        evidence=evidence)
     return Applied(True, summary, member)
+
+
+async def claim_target(db: Database, gamertag: str):
+    """The record a claim on this gamertag lands on, and every record it could
+    mean. More than one means two entries differ only by a dot, and a claim can't
+    pick between them: an officer merges them first."""
+    matches = await store.same_gamertag(db, gamertag)
+    return (matches[0] if len(matches) == 1 else None), matches
 
 
 async def inherits(db: Database, gamertag: str) -> tuple[int, int]:
     """What a claim on an existing gamertag would hand over: (achievements, scores).
     Officers need to see this before approving an identity claim."""
-    member = await store.find_member(db, gamertag)
+    member, _ = await claim_target(db, gamertag)
     if member is None:
         return (0, 0)
     return (

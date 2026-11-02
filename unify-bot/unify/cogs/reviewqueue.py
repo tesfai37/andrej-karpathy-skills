@@ -37,6 +37,16 @@ def usable_proof(attachments) -> discord.Attachment | None:
     return None
 
 
+async def copy_of(proof: discord.Attachment, stem: str = "proof") -> discord.File | None:
+    """A fresh upload of a screenshot. A link to the original would expire."""
+    ext = "." + proof.filename.rsplit(".", 1)[-1].lower() if "." in proof.filename else ".png"
+    try:
+        return await proof.to_file(filename=f"{stem}{ext}")
+    except discord.HTTPException:
+        log.warning("could not copy the screenshot %s", proof.filename)
+        return None
+
+
 async def run_members(bot, payload: dict) -> list[tuple[store.Member, str]]:
     out = []
     for member_id, role in payload.get("members", []):
@@ -77,13 +87,31 @@ async def describe(bot, row) -> str:
         role = ROLE_LABEL.get(row["role"], "⚠️ no role")
         return f"**{who}** · {role} · {', '.join(keys) or '—'}"
     if kind == "register":
+        target, matches = await reviews.claim_target(bot.db, row["subject"])
         held, _ = await reviews.inherits(bot.db, row["subject"])
-        warn = (f"  ⚠️ **would inherit {held} achievements**" if held else "  (new name)")
+        if len(matches) > 1:
+            warn = (f"  ⚠️ **matches {len(matches)} roster entries** — merge them with "
+                    "`/member merge` first")
+        elif target is not None:
+            warn = (f"  ⚠️ **would inherit {held} achievement{'s' if held != 1 else ''}**"
+                    if held else "  (existing record, nothing on it yet)")
+        else:
+            warn = "  (new name)"
         return f"<@{row['requester_id']}> claims **{who}**{warn}"
     if kind == "score":
         return f"**{who}** · {payload.get('trial', '?')} = {int(payload.get('score', 0)):,}"
     if kind == "parse":
         return f"**{who}** · {payload.get('label', '?')} = {int(payload.get('dps', 0)):,}"
+    if kind == "check":
+        people = len(payload.get("recorded", []))
+        bits = [f"<@{row['requester_id']}> recorded **{people}** "
+                f"{'person' if people == 1 else 'people'} straight away"]
+        if payload.get("keys"):
+            bits.append(", ".join(payload["keys"]))
+        if payload.get("score_raised"):
+            bits.append(f"{payload['trial']} score {int(payload['score']):,} for "
+                        f"{len(payload['score_raised'])}")
+        return " · ".join(bits)
     return f"**{who}** · {kind}"
 
 
@@ -97,6 +125,21 @@ async def card(bot, row, image: str | None = None) -> discord.Embed:
         f"{reviews.KIND_LABEL.get(row['kind'], row['kind'])} — waiting for an officer",
         await describe(bot, row),
     )
+
+    if row["kind"] == "check":
+        lines = []
+        for member_id, role, added in payload.get("recorded", []):
+            member = await store.get_member(bot.db, member_id)
+            if member is not None and added:
+                lines.append(f"{ROLE_EMOJI.get(role, '')} **{member.gamertag}** +{', '.join(added)}")
+        if lines:
+            e.add_field(name="What it recorded", value=embeds.lines_within(lines), inline=False)
+        e.add_field(name="What the buttons do",
+                    value="**Approve** if it looks right. **Reject** undoes everything "
+                          "this post recorded.", inline=False)
+        if payload.get("evidence"):
+            e.add_field(name="Evidence", value=f"[the bot's copy]({payload['evidence']})",
+                        inline=True)
 
     if row["kind"] == "run":
         people = await run_members(bot, payload)
@@ -127,13 +170,7 @@ async def post_card(bot, row, *, proof: discord.Attachment | None = None,
                     reply_to: discord.Message | None = None,
                     channel: discord.abc.Messageable | None = None) -> discord.Message | None:
     """Post a request's card, copying the evidence onto it, and remember where it went."""
-    file = None
-    if proof is not None:
-        try:
-            ext = "." + proof.filename.rsplit(".", 1)[-1].lower() if "." in proof.filename else ".png"
-            file = await proof.to_file(filename=f"proof{ext}")
-        except discord.HTTPException:
-            log.warning("could not copy the screenshot for request #%s", row["id"])
+    file = await copy_of(proof) if proof is not None else None
     embed = await card(bot, row, f"attachment://{file.filename}" if file else None)
     view = ReviewCard(bot, with_role=reviews.needs_role(row))
     kwargs = {"embed": embed, "view": view}
@@ -160,9 +197,17 @@ def image_on(message: discord.Message | None) -> str | None:
     return None
 
 
+def card_link(row, guild) -> str:
+    """Where the request's card is, or failing that the post it came from."""
+    if guild is not None and row["channel_id"] and row["message_id"]:
+        return f"https://discord.com/channels/{guild.id}/{row['channel_id']}/{row['message_id']}"
+    return row["source_url"] or ""
+
+
 async def approve_one(bot, row, actor: discord.abc.User, guild) -> reviews.Applied:
-    """The one path from request to guild data."""
-    result = await reviews.apply(bot.db, row, actor.id, str(actor))
+    """The one path from request to guild data. Every change it makes links back to
+    the card the officer approved, which carries the screenshot."""
+    result = await reviews.apply(bot.db, row, actor.id, str(actor), card_link(row, guild))
     if not result.ok:
         return result
     await reviews.close(bot.db, row["id"], "approved", actor.id)
@@ -186,6 +231,29 @@ async def approve_one(bot, row, actor: discord.abc.User, guild) -> reviews.Appli
             await cog.notify(result.member, row["role"],
                              json.loads(row["payload"] or "{}").get("keys", []))
     return result
+
+
+async def reject_one(bot, row, actor: discord.abc.User, guild) -> str:
+    """The one path for turning a request down. Rejecting a spot check undoes
+    everything that post recorded; rejecting anything else just discards it."""
+    summary = ""
+    if row["kind"] == "check":
+        payload = json.loads(row["payload"] or "{}")
+        undone = 0
+        for entry in await bot.db.all(
+                "SELECT id FROM audit_log WHERE evidence = ? AND evidence <> '' AND undone = 0 "
+                "ORDER BY id DESC", (payload.get("evidence", ""),)):
+            if await store.undo_action(bot.db, entry["id"]) is not None:
+                undone += 1
+        for member_id, _, _ in payload.get("recorded", []):
+            member = await store.get_member(bot.db, member_id)
+            if member is not None:
+                await bot.sync_roles(guild, member, "spot check undone")
+        summary = f"undid {undone} change{'s' if undone != 1 else ''}"
+    await reviews.close(bot.db, row["id"], "rejected", actor.id)
+    await bot.audit(actor, f"{row['kind']} rejected",
+                    f"#{row['id']}" + (f" — {summary}" if summary else ""))
+    return summary
 
 
 class CardRole(discord.ui.Select):
@@ -249,10 +317,10 @@ class ReviewCard(discord.ui.View):
         row = await self.row_for(interaction)
         if row is None:
             return
-        await reviews.close(self.bot.db, row["id"], "rejected", interaction.user.id)
-        await self.bot.audit(interaction.user, f"{row['kind']} rejected", f"#{row['id']}")
+        summary = await reject_one(self.bot, row, interaction.user, interaction.guild)
         await interaction.response.edit_message(
-            embed=embeds.warn(f"Rejected by {interaction.user.mention}."), view=None)
+            embed=embeds.warn(f"Rejected by {interaction.user.mention}."
+                              + (f" It {summary}." if summary else "")), view=None)
 
 
 class QueueView(views.OwnedView):
@@ -343,9 +411,7 @@ class QueueView(views.OwnedView):
                 else:
                     failed.append(f"#{request_id} {result.summary}")
             else:
-                await reviews.close(self.bot.db, request_id, "rejected", interaction.user.id)
-                await self.bot.audit(interaction.user, f"{row['kind']} rejected",
-                                     f"#{request_id}")
+                await reject_one(self.bot, row, interaction.user, interaction.guild)
                 done += 1
         self.picked = []
         word = "approved" if approve else "rejected"

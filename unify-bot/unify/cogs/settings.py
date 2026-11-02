@@ -12,8 +12,8 @@ from ..config import SETTING_DEFAULTS
 # /config show, in the order an officer thinks about it. Every setting appears
 # exactly once (the tests hold this), so a new one can't go missing from the screen.
 GROUPS = {
-    "📍 Where things go": ("submissions_channel", "audit_channel", "welcome_channel",
-                          "reports_channel"),
+    "📍 Where things go": ("submissions_channel", "audit_channel", "evidence_channel",
+                          "welcome_channel", "reports_channel"),
     "🛡️ Who can do what": ("admin_roles", "recorder_roles", "submission_mode", "viewer_roles"),
     "🙋 What members may ask for": ("registration", "member_submissions"),
     "📋 Logging": ("activity_channel", "problems_channel", "digest_minutes", "briefing_hour",
@@ -98,9 +98,13 @@ async def status_report(bot, guild: discord.Guild) -> discord.Embed:
     problems = await where("problems_channel")
     if problems == "_not set_" and await bot.setting("audit_channel"):
         problems = "the admin log, since no problems channel is set"
+    evidence = await where("evidence_channel")
+    if evidence == "_not set_" and await bot.setting("audit_channel"):
+        evidence = "the admin log, since no evidence channel is set"
     e.add_field(name="Where things go", value="\n".join([
         f"Achievement posts are read in {await where('submissions_channel')}",
         f"Admin log, and cards for `/register` and `/submit`: {await where('audit_channel')}",
+        f"Copies of the screenshots behind instant recordings: {evidence}",
         f"Activity digest, every {await bot.setting('digest_minutes')} min: "
         f"{await where('activity_channel')}",
         f"Problems, and the {await bot.setting('briefing_hour')}:00 UTC briefing: {problems}",
@@ -136,6 +140,10 @@ async def status_report(bot, guild: discord.Guild) -> discord.Embed:
         fix.append("Nobody on the roster is linked to a Discord account yet, so posts that "
                    "@mention people can't find anyone. Run `/member match` to link "
                    "everybody from their old Discord names.")
+    if not (await bot.setting("evidence_channel") or await bot.setting("audit_channel")):
+        fix.append("There's nowhere to keep copies of screenshots, so nothing records "
+                   "straight away: every post waits for an officer. Set an admin log "
+                   "channel in `/setup`.")
     if not (await bot.setting("audit_channel") or await bot.setting("problems_channel")):
         fix.append("No admin log or problems channel, so `/register` and `/submit` cards "
                    "only show in `/queue` and there's no morning briefing.")

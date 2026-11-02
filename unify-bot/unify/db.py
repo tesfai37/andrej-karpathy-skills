@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS members (
     gamertag    TEXT NOT NULL COLLATE NOCASE UNIQUE,
     legacy_name TEXT NOT NULL DEFAULT '',   -- DiscordName as it appeared in the old sheet
     active      INTEGER NOT NULL DEFAULT 1,
+    left_server INTEGER NOT NULL DEFAULT 0, -- 1 when leaving the server switched them off
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -95,7 +96,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
     action     TEXT NOT NULL,
     summary    TEXT NOT NULL,
     undo       TEXT,
-    undone     INTEGER NOT NULL DEFAULT 0
+    undone     INTEGER NOT NULL DEFAULT 0,
+    evidence   TEXT NOT NULL DEFAULT ''   -- link to the screenshot behind this change
 );
 
 CREATE TABLE IF NOT EXISTS pending_submissions (
@@ -184,6 +186,8 @@ class Database:
         for table, column, ddl in (
             ("member_achievements", "mark", "mark TEXT NOT NULL DEFAULT 'X'"),
             ("members", "legacy_name", "legacy_name TEXT NOT NULL DEFAULT ''"),
+            ("members", "left_server", "left_server INTEGER NOT NULL DEFAULT 0"),
+            ("audit_log", "evidence", "evidence TEXT NOT NULL DEFAULT ''"),
         ):
             have = {r[1] for r in await self.all(f"PRAGMA table_info({table})")}
             if column not in have:
