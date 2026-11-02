@@ -153,6 +153,11 @@ class Database:
         await self.conn.executescript(SCHEMA)
         await self._add_missing_columns()
         await self._carry_over_pending()
+        # `auto` let anyone's post apply and no longer exists. A server still on
+        # it moves to `trusted`, so members' posts wait for an officer.
+        await self.conn.execute(
+            "UPDATE settings SET value = ? WHERE key = 'submission_mode' AND value = ?",
+            (json.dumps("trusted"), json.dumps("auto")))
         await self.conn.commit()
 
     async def _carry_over_pending(self) -> None:

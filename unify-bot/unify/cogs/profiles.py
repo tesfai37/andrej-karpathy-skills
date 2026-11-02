@@ -1,11 +1,13 @@
 """Everything a normal member uses to look someone up."""
 from __future__ import annotations
 
+import json
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from .. import autocomplete, embeds, store, views
+from .. import autocomplete, embeds, reviews, store, views
 from ..checks import viewer_only
 from ..config import ROLES
 
@@ -30,6 +32,21 @@ def missing(member: str | None, user: discord.Member | None,
                             "An officer can add them with `/member add`.")
     return embeds.error("You're not on the roster yet. Run `/register` to ask "
                         "an officer to add you.")
+
+
+async def waiting_on(db, discord_id: int, member: store.Member | None) -> list[str]:
+    """Anything of this person's still waiting on an officer: what they raised,
+    what's about them, and runs they're in."""
+    mine = []
+    for r in await db.all("SELECT * FROM requests WHERE status = 'pending' ORDER BY id"):
+        in_run = member is not None and any(
+            member_id == member.id
+            for member_id, _ in json.loads(r["payload"] or "{}").get("members", []))
+        if r["requester_id"] == discord_id or in_run or (
+                member is not None and r["member_id"] == member.id):
+            mine.append(f"`#{r['id']}` {reviews.KIND_LABEL.get(r['kind'], r['kind'])}"
+                        + (f" — {r['note']}" if r["note"] else ""))
+    return mine
 
 
 class Profiles(commands.Cog):
@@ -67,69 +84,31 @@ class Profiles(commands.Cog):
         await interaction.response.send_message(embed=embed, view=view)
         view.message = await interaction.original_response()
 
-    @app_commands.command(description="Your own achievement card")
+    @app_commands.command(description="Your own card, and anything of yours waiting on an officer")
     @viewer_only()
     async def me(self, interaction: discord.Interaction):
-        target = await store.find_member(interaction.client.db, interaction.user.id)
+        db = interaction.client.db
+        target = await store.find_member(db, interaction.user.id)
+        waiting = await waiting_on(db, interaction.user.id, target)
+        heading = f"⏳ {len(waiting)} waiting on an officer"
         if target is None:
-            return await interaction.response.send_message(
-                embed=embeds.error(
-                    "You're not in the roster yet. Ask an admin to run "
-                    "`/member add` with your gamertag."),
-                ephemeral=True,
-            )
+            e = embeds.base(self.bot.brand, "🪪  Where you stand",
+                            "You're not linked to a gamertag yet. Run `/register` with a "
+                            "screenshot of your gamertag, and an officer will link you.")
+            if waiting:
+                e.add_field(name=heading, value=embeds.lines_within(waiting), inline=False)
+            e.set_footer(text=f"{self.bot.brand.name} • only you can see this")
+            return await interaction.response.send_message(embed=e, ephemeral=True)
+
         view = views.ProfileView(self.bot, interaction.user.id, target, "dps",
                                  interaction.user.display_avatar.url)
         embed = await view.build()
         await interaction.response.send_message(embed=embed, view=view)
         view.message = await interaction.original_response()
-
-    # ------------------------------------------------------------------ scores
-    @app_commands.command(description="Trial scores for a member")
-    @app_commands.autocomplete(member=autocomplete.members)
-    @viewer_only()
-    async def score(self, interaction: discord.Interaction, member: str | None = None,
-                    user: discord.Member | None = None):
-        found = await resolve(interaction, member, user)
-        target = found.member
-        if target is None:
-            return await interaction.response.send_message(
-                embed=missing(member, user, found), ephemeral=True)
-        rows = await self.bot.db.all(
-            "SELECT t.emoji, t.short, t.name, s.score, s.recorded_at FROM scores s "
-            "JOIN trials t ON t.key = s.trial_key WHERE s.member_id = ? ORDER BY t.sort",
-            (target.id,),
-        )
-        e = embeds.base(self.bot.brand, f"🏆  Scores — {target.gamertag}")
-        if rows:
-            e.description = "\n".join(
-                f"{r['emoji']} `{r['short']:<5}` **{r['score']:,}**" for r in rows
-            )
-            e.add_field(name="Total", value=f"**{sum(r['score'] for r in rows):,}**")
-        else:
-            e.description = "_No scores recorded yet._"
-        await interaction.response.send_message(embed=e)
-
-    # ------------------------------------------------------------------ parses
-    @app_commands.command(description="Parse numbers for a member")
-    @app_commands.autocomplete(member=autocomplete.members)
-    @viewer_only()
-    async def parse(self, interaction: discord.Interaction, member: str | None = None,
-                    user: discord.Member | None = None):
-        found = await resolve(interaction, member, user)
-        target = found.member
-        if target is None:
-            return await interaction.response.send_message(
-                embed=missing(member, user, found), ephemeral=True)
-        rows = await self.bot.db.all(
-            "SELECT label, dps, recorded_at FROM parses WHERE member_id = ? ORDER BY dps DESC",
-            (target.id,),
-        )
-        e = embeds.base(self.bot.brand, f"⚔️  Parses — {target.gamertag}")
-        e.description = "\n".join(
-            f"**{r['dps']:,}** — {r['label']}" for r in rows
-        ) or "_No parses recorded yet._"
-        await interaction.response.send_message(embed=e)
+        if waiting:
+            await interaction.followup.send(
+                embed=embeds.base(self.bot.brand, heading, embeds.lines_within(waiting)),
+                ephemeral=True)
 
     # ------------------------------------------------------------------ roster
     @app_commands.command(description="Who is in the roster")

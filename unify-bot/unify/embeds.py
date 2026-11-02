@@ -171,6 +171,23 @@ def profile_embed(
     return e
 
 
+def numbers_embed(brand: Brand, gamertag: str, scores: list, parses: list) -> discord.Embed:
+    """Someone's trial scores and parses, one tap from their profile."""
+    e = base(brand, f"🏆  Scores & parses — {gamertag}")
+    total = sum(r["score"] for r in scores)
+    e.add_field(
+        name=f"Trial scores · total {total:,}" if scores else "Trial scores",
+        value=lines_within([f"{r['emoji']} `{r['short']:<5}` **{r['score']:,}**" for r in scores])
+        if scores else "_No scores recorded yet._",
+        inline=False)
+    e.add_field(
+        name="Parses",
+        value=lines_within([f"**{r['dps']:,}** — {r['label']}" for r in parses])
+        if parses else "_No parses recorded yet._",
+        inline=False)
+    return e
+
+
 def trial_embed(brand: Brand, gamertag: str, role: str, trial: dict, rows: list[dict],
                 mark_label: str = "Lead") -> discord.Embed:
     done = sum(1 for r in rows if r["have"])

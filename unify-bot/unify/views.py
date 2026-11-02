@@ -154,9 +154,21 @@ class ProfileView(OwnedView):
         self.role = role
         self.trial_key: str | None = None
         self.avatar_url = avatar_url
+        self.numbers = False          # showing scores & parses instead of clears
 
     async def build(self) -> discord.Embed:
         db = self.bot.db
+        if self.numbers:
+            self.clear_items()
+            self.add_item(BackButton())
+            return embeds.numbers_embed(
+                self.bot.brand, self.member.gamertag,
+                await db.all(
+                    "SELECT t.emoji, t.short, s.score FROM scores s "
+                    "JOIN trials t ON t.key = s.trial_key WHERE s.member_id = ? ORDER BY t.sort",
+                    (self.member.id,)),
+                await db.all("SELECT label, dps FROM parses WHERE member_id = ? "
+                             "ORDER BY dps DESC", (self.member.id,)))
         rows = await store.progress(db, self.member.id, self.role)
         self.clear_items()
         self.add_item(RoleSelect(self.role))
@@ -170,6 +182,7 @@ class ProfileView(OwnedView):
                 self.bot.brand, self.member.gamertag, self.role, trial, detail,
                 await self.bot.setting("mark_label"))
 
+        self.add_item(NumbersButton())
         return embeds.profile_embed(
             self.bot.brand,
             self.member.gamertag,
@@ -196,6 +209,18 @@ class BackButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         view: ProfileView = self.view
         view.trial_key = None
+        view.numbers = False
+        await view.refresh(interaction)
+
+
+class NumbersButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Scores & parses", emoji="🏆",
+                         style=discord.ButtonStyle.secondary, row=2)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: ProfileView = self.view
+        view.numbers = True
         await view.refresh(interaction)
 
 

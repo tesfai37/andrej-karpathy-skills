@@ -31,9 +31,9 @@ SETTING_DEFAULTS: dict[str, tuple[str, object, str]] = {
     "reports_channel":      ("channel", 0, "Channel for scheduled exports and reports"),
     "admin_roles":          ("roles",   [], "Roles allowed to change data"),
     "viewer_roles":         ("roles",   [], "Roles allowed to look people up (empty = everyone)"),
-    "submission_mode":      ("choice:auto,review,trusted", "trusted",
-                             "trusted = recorders apply instantly and everything else "
-                             "queues; review = everything queues; auto = everything applies"),
+    "submission_mode":      ("choice:review,trusted", "trusted",
+                             "trusted = recorders apply instantly (never for themselves) "
+                             "and everything else queues; review = everything queues"),
     "recorder_roles":       ("roles",   [],
                              "Roles trusted to record for OTHER people - never for themselves"),
     "registration":         ("bool",    True,

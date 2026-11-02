@@ -77,11 +77,13 @@ class Guides(commands.Cog):
         category, _, topic = value.partition("/")
         return category.strip(), topic.strip()
 
-    @group.command(name="show", description="Look something up")
+    @group.command(name="show", description="Look something up, or leave it blank to see everything")
     @app_commands.describe(topic="Start typing — CP builds, links, setups…")
     @app_commands.autocomplete(topic=topic_autocomplete)
     @viewer_only()
-    async def show(self, interaction: discord.Interaction, topic: str):
+    async def show(self, interaction: discord.Interaction, topic: str | None = None):
+        if not topic:
+            return await self.send_list(interaction)
         category, name = self.split(topic)
         row = await self.bot.db.one(
             "SELECT * FROM guides WHERE category = ? AND topic = ?", (category, name)
@@ -89,7 +91,8 @@ class Guides(commands.Cog):
         if row is None:
             return await interaction.response.send_message(
                 embed=embeds.error(
-                    f"I don't have anything for **{topic}**. `/guide list` shows everything."),
+                    f"I don't have anything for **{topic}**. `/guide show` with no topic "
+                    "lists everything."),
                 ephemeral=True)
         e = embeds.base(
             self.bot.brand,
@@ -98,17 +101,11 @@ class Guides(commands.Cog):
         e.set_footer(text=f"{self.bot.brand.name} • {row['category']} • updated {row['updated_at']}")
         await interaction.response.send_message(embed=e)
 
-    @group.command(name="list", description="Everything the bot can tell you about")
-    @app_commands.autocomplete(category=category_autocomplete)
-    @viewer_only()
-    async def list_cmd(self, interaction: discord.Interaction, category: str | None = None):
-        if category:
-            rows = await self.bot.db.all(
-                "SELECT category, topic FROM guides WHERE category = ? ORDER BY topic",
-                (category,))
-        else:
-            rows = await self.bot.db.all("SELECT category, topic FROM guides "
-                                         "ORDER BY category, topic")
+    async def send_list(self, interaction: discord.Interaction):
+        """Everything the bot can tell you about. Typing in the topic box filters
+        by category too, so this needs no filter of its own."""
+        rows = await self.bot.db.all("SELECT category, topic FROM guides "
+                                     "ORDER BY category, topic")
         if not rows:
             return await interaction.response.send_message(
                 embed=embeds.warn("Nothing saved yet — officers add entries with "

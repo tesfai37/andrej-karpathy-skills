@@ -72,9 +72,8 @@ def decide(
 ) -> Routing:
     """The whole call: submission_mode plus the routing rules.
 
-    `review` queues everything. `trusted` applies only for recorders. `auto`
-    drops the recorder requirement but keeps every other guard - it never means
-    "write whatever anyone posts"."""
+    `review` queues everything. `trusted` applies only for recorders. There is
+    deliberately no mode where a member's own post applies."""
     if not has_role:
         return Routing(False, "no role given - pick one when approving")
     if mode == "review":
@@ -82,7 +81,7 @@ def decide(
     return route(
         submitter_id=submitter_id,
         subject_discord_id=subject_discord_id,
-        submitter_trusted=(mode == "auto") or is_recorder,
+        submitter_trusted=is_recorder,
         member_known=member_known,
         all_roles_mapped=all_roles_mapped,
         removes=removes,

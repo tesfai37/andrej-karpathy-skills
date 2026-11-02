@@ -21,6 +21,36 @@ from .. import embeds, reviews
 log = logging.getLogger("unify.logs")
 
 
+async def recorder_week(db) -> list[str]:
+    """Who recorded what in the last seven days, one line each.
+
+    Recorders write without a review, so this is the check on them: a recorder
+    who mostly records the same few people stands out here."""
+    rows = await db.all(
+        "SELECT ma.granted_by AS who, COUNT(*) AS recorded, "
+        "COUNT(DISTINCT ma.member_id) AS people, SUM(a.kind = 'title') AS titles "
+        "FROM member_achievements ma JOIN achievements a ON a.key = ma.achievement_key "
+        "WHERE ma.granted_by IS NOT NULL AND ma.granted_at >= datetime('now', '-7 days') "
+        "GROUP BY ma.granted_by ORDER BY recorded DESC")
+    lines = []
+    for r in rows:
+        line = (f"<@{r['who']}> — **{r['recorded']}** achievements for **{r['people']}** "
+                f"{'person' if r['people'] == 1 else 'people'}"
+                + (f" · {r['titles']} title{'s' if r['titles'] != 1 else ''}" if r["titles"] else ""))
+        if r["recorded"] >= 10:
+            top = await db.all(
+                "SELECT m.gamertag, COUNT(*) AS n FROM member_achievements ma "
+                "JOIN members m ON m.id = ma.member_id "
+                "WHERE ma.granted_by = ? AND ma.granted_at >= datetime('now', '-7 days') "
+                "GROUP BY ma.member_id ORDER BY n DESC LIMIT 3", (r["who"],))
+            share = sum(t["n"] for t in top) / r["recorded"]
+            if share >= 0.6:
+                line += (f"\n  ⚠️ {share:.0%} of it went to "
+                         f"{', '.join(t['gamertag'] for t in top)} — worth a look")
+        lines.append(line)
+    return lines
+
+
 class Logs(commands.Cog):
     """Logging"""
 
@@ -159,6 +189,11 @@ class Logs(commands.Cog):
                         value="\n".join(chores), inline=False)
 
         e.add_field(name="Yesterday", value=f"**{yesterday}** recorded changes", inline=False)
+        if datetime.now(timezone.utc).weekday() == 0:
+            week = await recorder_week(db)
+            e.add_field(name="🧾 Who recorded what this week",
+                        value=embeds.lines_within(week) if week else "Nobody recorded anything.",
+                        inline=False)
         e.set_footer(text=f"{self.bot.brand.name} • posted once a day")
         return e
 

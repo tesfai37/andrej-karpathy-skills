@@ -12,8 +12,6 @@ from discord import app_commands
 from discord.ext import commands
 
 from .. import autocomplete, embeds, reviews, store
-from ..checks import viewer_only
-from ..config import ROLE_LABEL
 from .reviewqueue import post_card, usable_proof
 
 GAMERTAG = re.compile(r"^[A-Za-z0-9 ._'@\-]{2,40}$")
@@ -174,47 +172,6 @@ class Membership(commands.Cog):
             embed=embeds.success(
                 f"Sent `#{request_id}` for an officer to check: **{label} = {dps:,}**."),
             ephemeral=True)
-
-    # ------------------------------------------------------------------ whoami
-    @app_commands.command(description="Your link, and anything of yours that's waiting")
-    @viewer_only()
-    async def whoami(self, interaction: discord.Interaction):
-        db = self.bot.db
-        mine = await store.find_member(db, interaction.user.id)
-        e = embeds.base(self.bot.brand, "🪪  Where you stand")
-
-        if mine is None:
-            e.add_field(
-                name="Roster", value="❌ Not linked to any gamertag.\nRun `/register`.",
-                inline=False)
-        else:
-            counts = await db.all(
-                "SELECT role, COUNT(*) FROM member_achievements WHERE member_id = ? "
-                "GROUP BY role", (mine.id,))
-            e.add_field(
-                name="Roster",
-                value=f"✅ You are **{mine.gamertag}**\n"
-                      + (", ".join(f"{ROLE_LABEL.get(r, r)} {n}" for r, n in counts)
-                         or "no achievements recorded yet"),
-                inline=False)
-
-        rows = await db.all(
-            "SELECT id, kind, note, created_at FROM requests "
-            "WHERE status = 'pending' AND (requester_id = ? OR member_id = ?) "
-            "ORDER BY id", (interaction.user.id, mine.id if mine else -1))
-        if rows:
-            e.add_field(
-                name=f"⏳ {len(rows)} waiting on an officer",
-                value=embeds.lines_within([
-                    f"`#{r['id']}` {reviews.KIND_LABEL.get(r['kind'], r['kind'])}"
-                    + (f" — {r['note']}" if r["note"] else "")
-                    for r in rows]),
-                inline=False)
-        else:
-            e.add_field(name="⏳ Waiting", value="Nothing of yours is pending.", inline=False)
-
-        e.set_footer(text=f"{self.bot.brand.name} • only you can see this")
-        await interaction.response.send_message(embed=e, ephemeral=True)
 
     # ------------------------------------------------------------------ leavers
     @commands.Cog.listener()

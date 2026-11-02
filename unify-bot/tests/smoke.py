@@ -55,6 +55,18 @@ async def test_command_tree() -> None:
         }
         check(f"{len(names)} top-level commands registered", len(names) >= 12, ", ".join(names))
         check("/find is registered", "find" in names)
+        check("/status is registered", "status" in names)
+        from unify.cogs.helpmenu import SECTIONS
+        listed = {cmd for _, _, _, rows in SECTIONS for cmd, _ in rows}
+        real = {f"/{n}" for n in names} | subs
+        check("every command in /help exists", listed <= real, str(listed - real))
+        hidden = {f"/{c.name}" for c in bot.tree.get_commands()
+                  if not hasattr(c, "commands")} | subs
+        check("every command exists in /help", hidden <= listed | {"/help"},
+              str(hidden - listed - {"/help"}))
+        for gone in ("score", "parse", "whoami"):
+            check(f"/{gone} has been folded away", gone not in names)
+        check("/guide list has been folded away", "/guide list" not in subs)
         for expected in ("/map auto", "/member add", "/achievement give", "/record score",
                          "/config show", "/trial add",
                          "/sync all", "/sync member", "/sync check"):
@@ -660,7 +672,7 @@ async def test_roster_claims() -> None:
 
 
 async def test_submission_modes() -> None:
-    """The complete matrix of who causes a write, across all three modes."""
+    """The complete matrix of who causes a write, across both modes."""
     print("\nsubmission modes")
 
     def d(mode, **kw):
@@ -672,9 +684,10 @@ async def test_submission_modes() -> None:
     check("review mode queues even a recorder", not d("review", is_recorder=True).auto)
     check("trusted mode queues an ordinary member", not d("trusted").auto)
     check("trusted mode applies for a recorder", d("trusted", is_recorder=True).auto)
-    check("auto mode applies for an ordinary member", d("auto").auto)
+    check("there is no mode where an ordinary member's post applies",
+          not any(d(mode).auto for mode in ("review", "trusted", "auto")))
 
-    for mode in ("review", "trusted", "auto"):
+    for mode in ("review", "trusted"):
         check(f"{mode}: nobody records their own clear",
               not d(mode, is_recorder=True, subject_discord_id=1).auto)
         check(f"{mode}: an unknown member always queues",
@@ -683,6 +696,16 @@ async def test_submission_modes() -> None:
               not d(mode, is_recorder=True, all_roles_mapped=False).auto)
         check(f"{mode}: a post with no role always queues",
               not d(mode, is_recorder=True, has_role=False).auto)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        await db.set_setting("submission_mode", "auto")
+        await db.close()
+        db = Database(f"{tmp}/t.sqlite3")
+        await db.connect()
+        check("a server left on the old auto mode starts up on trusted",
+              await db.get_setting("submission_mode") == "trusted")
+        await db.close()
 
 
 async def test_member_input_is_inert() -> None:
@@ -864,6 +887,7 @@ class FakeMember:
         self.display_name = self.name = f"user{uid}"
         self.global_name = None
         self.mention = f"<@{uid}>"
+        self.display_avatar = SimpleNamespace(url="https://cdn.example/avatar.png")
 
     def __str__(self):
         return self.display_name
@@ -959,18 +983,22 @@ class FakeChannel:
 class FakeInteraction:
     """Records what a command said back, whether straight away or after deferring."""
 
-    def __init__(self, user):
+    def __init__(self, user, client=None):
         from types import SimpleNamespace
-        self.user, self.said, self.deferred = user, [], False
+        self.user, self.client, self.said, self.sent, self.deferred = user, client, [], [], False
 
         async def send_message(**kwargs):
             self.said.append(kwargs["embed"])
+            self.sent.append(kwargs)
 
         async def defer(**kwargs):
             self.deferred = True
 
         self.response = SimpleNamespace(send_message=send_message, defer=defer)
         self.followup = SimpleNamespace(send=send_message)
+
+    async def original_response(self):
+        return None
 
 
 async def test_runs_end_to_end() -> None:
@@ -1229,6 +1257,172 @@ async def test_evidence_on_cards() -> None:
         await db.close()
 
 
+async def test_recorder_week() -> None:
+    print("\nthe weekly check on recorders")
+    from unify.cogs.logs import recorder_week
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        check("a quiet week says nothing", await recorder_week(db) == [])
+
+        FAIR, FRIENDLY = 750000000000000001, 750000000000000002
+        group = [await store.create_member(db, f"RUN{i:02d}.", None) for i in range(12)]
+        for m in group:
+            await store.grant(db, m, "dps", ["vss"], FAIR, "fair lead")
+        pals = group[:2]
+        for m in pals:
+            await store.grant(db, m, "tank", ["vasir"], FRIENDLY, "friendly lead")
+            await store.grant(db, m, "healer", ["vasir"], FRIENDLY, "friendly lead")
+        await store.grant(db, group[5], "dps", ["vas"], FRIENDLY, "friendly lead")
+        await db.run("INSERT INTO members(gamertag) VALUES('OLD.')")
+        old = await store.find_member(db, "OLD.")
+        await store.grant(db, old, "dps", ["vss"], FAIR, "fair lead")
+        await db.run("UPDATE member_achievements SET granted_at = datetime('now', '-9 days') "
+                     "WHERE member_id = ?", (old.id,))
+
+        lines = await recorder_week(db)
+        fair = next(line for line in lines if str(FAIR) in line)
+        friendly = next(line for line in lines if str(FRIENDLY) in line)
+        check("each recorder gets one line", len(lines) == 2, str(lines))
+        check("…counting what they recorded, for how many people",
+              "for **12** people" in fair and "for **3** people" in friendly, fair)
+        check("…and the titles among it", "· 4 titles" in friendly, friendly)
+        check("recording a whole run evenly raises no flag", "⚠️" not in fair)
+        check("recording the same few people over and over is flagged",
+              "⚠️" in friendly and "RUN00." in friendly and "RUN01." in friendly, friendly)
+        check("last week's work doesn't count this week", "for **13**" not in fair)
+        await db.close()
+
+
+async def test_status() -> None:
+    print("\n/status in plain English")
+    from types import SimpleNamespace
+    from unify.cogs.settings import status_report
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        GUILD, SUBS, LOG = 760000000000000000, 760000000000000001, 760000000000000002
+        everything = discord.Permissions(view_channel=True, read_message_history=True,
+                                         send_messages=True, add_reactions=True,
+                                         embed_links=True, attach_files=True)
+        allowed = {"perms": everything}
+        channels = {
+            SUBS: SimpleNamespace(mention="#subs", permissions_for=lambda me: allowed["perms"]),
+            LOG: SimpleNamespace(mention="#log"),
+        }
+        bot = FakeBot(db)
+        bot.get_channel = channels.get
+        guild = SimpleNamespace(id=GUILD, me=SimpleNamespace(
+            guild_permissions=discord.Permissions(manage_roles=False)))
+
+        def said(e, name):
+            return next(f.value for f in e.fields if name in f.name)
+
+        fresh = await status_report(bot, guild)
+        check("a fresh install says nobody's posts are read",
+              "nobody's posts are read" in said(fresh, "Fix"))
+        check("…and that only officers record so far", "Recorders:** none" in said(fresh, "Who"))
+
+        bot.overrides.update(submissions_channel=SUBS, audit_channel=LOG,
+                             recorder_roles=[760000000000000009])
+        good = await status_report(bot, guild)
+        check("a sound setup says nothing needs fixing",
+              "Nothing needs fixing" in said(good, "Problems"), said(good, "Problems"))
+        check("…and explains who records without a review",
+              "<@&760000000000000009>" in said(good, "Who")
+              and "never for themselves" in said(good, "Who"))
+
+        allowed["perms"] = discord.Permissions(view_channel=True, read_message_history=True,
+                                               send_messages=True, embed_links=True)
+        bot.overrides.update(recorder_roles=[GUILD], role_sync=True, submission_mode="review")
+        bad = await status_report(bot, guild)
+        problems = said(bad, "Fix")
+        check("a permission the bot lacks in the channel is named",
+              "react to posts" in problems and "copy screenshots" in problems, problems)
+        check("@everyone as a recorder is called out", "@everyone is a recorder" in problems)
+        check("role sync without Manage Roles is called out", "Manage Roles" in problems)
+        check("review mode is explained", "**every** post waits" in said(bad, "Who"))
+
+        bot.overrides["submissions_channel"] = 760000000000000099
+        gone = await status_report(bot, guild)
+        check("a deleted channel is noticed", "was deleted" in said(gone, "Fix")
+              and "deleted channel" in said(gone, "Where"))
+        await db.close()
+
+
+async def test_settings_screen() -> None:
+    print("\nthe settings screen")
+    from unify.cogs.settings import GROUPS, Settings
+    from unify.config import SETTING_DEFAULTS
+    grouped = [k for keys in GROUPS.values() for k in keys]
+    check("every setting is on the screen exactly once",
+          sorted(grouped) == sorted(SETTING_DEFAULTS) and len(grouped) == len(set(grouped)),
+          str(set(SETTING_DEFAULTS) ^ set(grouped)))
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        await db.set_setting("audit_days", 0)
+        await db.set_setting("admin_roles", list(range(1, 8)))
+        e = await Settings(FakeBot(db)).settings_screen()
+        text = "\n".join(f.value for f in e.fields)
+        check("settings are grouped, not one long list", len(e.fields) == len(GROUPS))
+        check("a channel that must be set is flagged", "**submissions_channel**: ⚠️ **not set**" in text)
+        check("0 is shown as 0, not as unset", "**audit_days**: `0`" in text)
+        check("switches read on and off", "**registration**: ✅ on" in text)
+        check("a long role list is shortened", "+2 more" in text)
+        check("the whole screen fits in one message", len(e) <= 6000, str(len(e)))
+        await db.close()
+
+
+async def test_folded_commands() -> None:
+    print("\nfewer commands, nothing lost")
+    from unify import views
+    from unify.cogs.guides import Guides
+    from unify.cogs.profiles import Profiles
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        bot = FakeBot(db)
+        member = await store.create_member(db, "FOLDED.", 770000000000000001)
+        await store.set_score(db, member, "vss", 251000, 1, "t")
+        await store.set_parse(db, member, "Arcanist", 118000, 1, "t")
+
+        card = views.ProfileView(bot, 1, member)
+        await card.build()
+        labels = [getattr(i, "label", None) for i in card.children]
+        check("the profile card has a Scores & parses button", "Scores & parses" in labels)
+        card.numbers = True
+        page = await card.build()
+        text = "\n".join(f.name + f.value for f in page.fields)
+        check("…which shows what /score and /parse did",
+              "251,000" in text and "118,000" in text and "Arcanist" in text, text)
+        check("…with a way back", [i.label for i in card.children] == ["Back to overview"])
+
+        cog = Profiles(bot)
+        stranger = FakeMember(770000000000000002)
+        await reviews.open_request(db, "register", requester_id=stranger.id, subject="NEW.")
+        said = FakeInteraction(stranger, bot)
+        await cog.me.callback(cog, said)
+        check("/me works before you're linked, privately",
+              said.sent[0].get("ephemeral") and "not linked" in said.said[0].description)
+        check("…and shows the claim you're waiting on",
+              any("`#1` Roster claim" in f.value for f in said.said[0].fields),
+              str([f.value for f in said.said[0].fields]))
+
+        await reviews.open_request(db, "run", requester_id=999,
+                                   payload={"keys": ["vss"], "members": [[member.id, "dps"]]})
+        said = FakeInteraction(FakeMember(member.discord_id), bot)
+        await cog.me.callback(cog, said)
+        check("/me shows your card in the open", not said.sent[0].get("ephemeral"))
+        check("…and privately, a run you're in that's still waiting",
+              len(said.sent) == 2 and said.sent[1].get("ephemeral")
+              and "#2" in said.said[1].description, said.said[-1].description)
+
+        await db.run("INSERT INTO guides(category, topic, body) VALUES('cp', 'magblade', 'x')")
+        guides = Guides(bot)
+        said = FakeInteraction(stranger, bot)
+        await guides.show.callback(guides, said)
+        check("/guide show with no topic lists everything",
+              "magblade" in said.said[0].fields[0].value)
+        await db.close()
+
+
 async def main() -> None:
     await test_command_tree()
     await test_prerequisites()
@@ -1256,6 +1450,10 @@ async def main() -> None:
     await test_missing_role_is_fixable()
     await test_edits()
     await test_evidence_on_cards()
+    await test_recorder_week()
+    await test_status()
+    await test_settings_screen()
+    await test_folded_commands()
     print()
     if failures:
         print(f"{len(failures)} check(s) failed: {', '.join(failures)}")
