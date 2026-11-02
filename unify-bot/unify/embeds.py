@@ -105,6 +105,16 @@ def error(text: str) -> discord.Embed:
     return discord.Embed(description=f"❌ {text}", color=0xEF4444)
 
 
+def no_match(query: str, candidates: list) -> discord.Embed:
+    """A typed name that found nobody, or found more than one person."""
+    if candidates:
+        names = ", ".join(f"**{m.gamertag}**" for m in candidates[:8])
+        return warn(f"**{query}** matches more than one person: {names}.\n"
+                    "Pick the right one from the list as you type.")
+    return error(f"No record for **{query}**. I checked gamertags and Discord names.\n"
+                 "An officer can add them with `/member add`.")
+
+
 def profile_embed(
     brand: Brand,
     gamertag: str,

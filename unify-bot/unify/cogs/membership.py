@@ -14,9 +14,10 @@ from discord.ext import commands
 from .. import autocomplete, embeds, reviews, store
 from ..checks import viewer_only
 from ..config import ROLE_LABEL
-from .reviewqueue import ReviewCard, card
+from .reviewqueue import post_card, usable_proof
 
 GAMERTAG = re.compile(r"^[A-Za-z0-9 ._'@\-]{2,40}$")
+BAD_PROOF = "The proof needs to be a screenshot: an image under 8 MB."
 
 
 class Membership(commands.Cog):
@@ -25,26 +26,30 @@ class Membership(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    async def raise_request(self, interaction: discord.Interaction, kind: str, **kwargs) -> int:
-        """Open a request and put a card where officers will see it."""
-        request_id = await reviews.open_request(self.bot.db, kind, **kwargs)
+    async def raise_request(self, interaction: discord.Interaction, kind: str,
+                            proof: discord.Attachment, **kwargs) -> int:
+        """Open a request and put its card, screenshot included, where officers
+        will see it. Copying the screenshot can outlast Discord's three seconds,
+        so callers defer first."""
+        request_id = await reviews.open_request(self.bot.db, kind, proof_url=proof.url, **kwargs)
         row = await reviews.get(self.bot.db, request_id)
         channel = await self.bot.channel_for("audit_channel", "problems_channel")
         if channel is not None:
-            try:
-                posted = await channel.send(embed=await card(self.bot, row),
-                                            view=ReviewCard(self.bot))
-                await reviews.attach_card(self.bot.db, request_id, posted.id,
-                                          posted.channel.id)
-            except discord.HTTPException:
-                pass
+            await post_card(self.bot, row, proof=proof, channel=channel)
         return request_id
 
     # ------------------------------------------------------------------ register
     @app_commands.command(description="Ask an officer to link your gamertag to this account")
-    @app_commands.describe(gamertag="Exactly as it appears in game")
+    @app_commands.describe(gamertag="Exactly as it appears in game",
+                           proof="A screenshot of your gamertag in game — required")
     @app_commands.checks.cooldown(2, 600, key=lambda i: i.user.id)
-    async def register(self, interaction: discord.Interaction, gamertag: str):
+    async def register(self, interaction: discord.Interaction, gamertag: str,
+                       proof: discord.Attachment):
+        await self.claim(interaction, gamertag, proof)
+
+    async def claim(self, interaction: discord.Interaction, gamertag: str,
+                    proof: discord.Attachment | None) -> None:
+        """Everything /register does. The welcome card's button lands here too."""
         if not await self.bot.setting("registration"):
             return await interaction.response.send_message(
                 embed=embeds.warn("Self-registration is turned off. Ask an officer to add you."),
@@ -81,15 +86,20 @@ class Membership(commands.Cog):
                     f"**{gamertag}** is already linked to another Discord account. "
                     "If that's wrong, talk to an officer."), ephemeral=True)
 
+        if proof is None or usable_proof([proof]) is None:
+            return await interaction.response.send_message(
+                embed=embeds.error(BAD_PROOF), ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
         request_id = await self.raise_request(
-            interaction, "register", requester_id=interaction.user.id,
+            interaction, "register", proof, requester_id=interaction.user.id,
             subject=gamertag,
             note="claims an existing record" if existing else "new name")
 
         held, _ = await reviews.inherits(self.bot.db, gamertag)
         extra = (f"\n\nBecause **{gamertag}** already has {held} achievements on file, "
                  "an officer will check this one carefully." if held else "")
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=embeds.success(
                 f"Claim `#{request_id}` raised for **{gamertag}**.\n"
                 f"Nothing is linked until an officer approves it.{extra}"),
@@ -128,15 +138,15 @@ class Membership(commands.Cog):
         if not await self.bot.db.one("SELECT 1 FROM trials WHERE key = ?", (trial,)):
             return await interaction.response.send_message(
                 embed=embeds.error(f"`{trial}` isn't a trial I know."), ephemeral=True)
-        if not (proof.content_type or "").startswith("image/"):
+        if usable_proof([proof]) is None:
             return await interaction.response.send_message(
-                embed=embeds.error("The proof needs to be an image."), ephemeral=True)
+                embed=embeds.error(BAD_PROOF), ephemeral=True)
 
+        await interaction.response.defer(ephemeral=True)
         request_id = await self.raise_request(
-            interaction, "score", requester_id=interaction.user.id, member_id=mine.id,
-            payload={"trial": trial, "score": int(score)}, proof_url=proof.url,
-            note="sent in by the member")
-        await interaction.response.send_message(
+            interaction, "score", proof, requester_id=interaction.user.id, member_id=mine.id,
+            payload={"trial": trial, "score": int(score)}, note="sent in by the member")
+        await interaction.followup.send(
             embed=embeds.success(
                 f"Sent `#{request_id}` for an officer to check: **{trial} = {score:,}**."),
             ephemeral=True)
@@ -152,15 +162,15 @@ class Membership(commands.Cog):
         mine = await self.submissions_open(interaction)
         if mine is None:
             return
-        if not (proof.content_type or "").startswith("image/"):
+        if usable_proof([proof]) is None:
             return await interaction.response.send_message(
-                embed=embeds.error("The proof needs to be an image."), ephemeral=True)
+                embed=embeds.error(BAD_PROOF), ephemeral=True)
 
+        await interaction.response.defer(ephemeral=True)
         request_id = await self.raise_request(
-            interaction, "parse", requester_id=interaction.user.id, member_id=mine.id,
-            payload={"label": label.strip(), "dps": int(dps)}, proof_url=proof.url,
-            note="sent in by the member")
-        await interaction.response.send_message(
+            interaction, "parse", proof, requester_id=interaction.user.id, member_id=mine.id,
+            payload={"label": label.strip(), "dps": int(dps)}, note="sent in by the member")
+        await interaction.followup.send(
             embed=embeds.success(
                 f"Sent `#{request_id}` for an officer to check: **{label} = {dps:,}**."),
             ephemeral=True)

@@ -11,20 +11,25 @@ from ..config import ROLES
 
 
 async def resolve(interaction: discord.Interaction, member: str | None,
-                  user: discord.Member | None) -> store.Member | None:
-    """Commands accept either a picked Discord user or a typed gamertag."""
+                  user: discord.Member | None) -> store.Lookup:
+    """A picked Discord user, a typed gamertag or Discord name, or yourself."""
     db = interaction.client.db
     if user is not None:
-        return await store.find_member(db, user.id)
+        return store.Lookup(await store.find_member(db, user.id))
     if member:
-        return await store.find_member(db, member)
-    return await store.find_member(db, interaction.user.id)
+        return await store.lookup_member(db, member, interaction.guild)
+    return store.Lookup(await store.find_member(db, interaction.user.id))
 
 
-NOT_FOUND = (
-    "I don't have a record for that person yet.\n"
-    "Ask an admin to run `/member add` — it takes ten seconds."
-)
+def missing(member: str | None, user: discord.Member | None,
+            found: store.Lookup) -> discord.Embed:
+    if member:
+        return embeds.no_match(member, found.candidates)
+    if user is not None:
+        return embeds.error(f"{user.mention} isn't on the roster yet. "
+                            "An officer can add them with `/member add`.")
+    return embeds.error("You're not on the roster yet. Run `/register` to ask "
+                        "an officer to add you.")
 
 
 class Profiles(commands.Cog):
@@ -46,10 +51,11 @@ class Profiles(commands.Cog):
     async def profile(self, interaction: discord.Interaction, member: str | None = None,
                       user: discord.Member | None = None,
                       role: app_commands.Choice[str] | None = None):
-        target = await resolve(interaction, member, user)
+        found = await resolve(interaction, member, user)
+        target = found.member
         if target is None:
-            return await interaction.response.send_message(embed=embeds.error(NOT_FOUND),
-                                                           ephemeral=True)
+            return await interaction.response.send_message(
+                embed=missing(member, user, found), ephemeral=True)
         avatar = None
         if target.discord_id and interaction.guild:
             found = interaction.guild.get_member(target.discord_id)
@@ -84,10 +90,11 @@ class Profiles(commands.Cog):
     @viewer_only()
     async def score(self, interaction: discord.Interaction, member: str | None = None,
                     user: discord.Member | None = None):
-        target = await resolve(interaction, member, user)
+        found = await resolve(interaction, member, user)
+        target = found.member
         if target is None:
-            return await interaction.response.send_message(embed=embeds.error(NOT_FOUND),
-                                                           ephemeral=True)
+            return await interaction.response.send_message(
+                embed=missing(member, user, found), ephemeral=True)
         rows = await self.bot.db.all(
             "SELECT t.emoji, t.short, t.name, s.score, s.recorded_at FROM scores s "
             "JOIN trials t ON t.key = s.trial_key WHERE s.member_id = ? ORDER BY t.sort",
@@ -109,10 +116,11 @@ class Profiles(commands.Cog):
     @viewer_only()
     async def parse(self, interaction: discord.Interaction, member: str | None = None,
                     user: discord.Member | None = None):
-        target = await resolve(interaction, member, user)
+        found = await resolve(interaction, member, user)
+        target = found.member
         if target is None:
-            return await interaction.response.send_message(embed=embeds.error(NOT_FOUND),
-                                                           ephemeral=True)
+            return await interaction.response.send_message(
+                embed=missing(member, user, found), ephemeral=True)
         rows = await self.bot.db.all(
             "SELECT label, dps, recorded_at FROM parses WHERE member_id = ? ORDER BY dps DESC",
             (target.id,),

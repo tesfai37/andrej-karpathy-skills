@@ -87,10 +87,11 @@ class Sync(commands.Cog):
     @app_commands.autocomplete(member=autocomplete.members)
     @admin_only()
     async def member_cmd(self, interaction: discord.Interaction, member: str):
-        target = await store.find_member(self.bot.db, member)
+        found = await store.lookup_member(self.bot.db, member, interaction.guild)
+        target = found.member
         if target is None:
             return await interaction.response.send_message(
-                embed=embeds.error(f"No record for **{member}**."), ephemeral=True)
+                embed=embeds.no_match(member, found.candidates), ephemeral=True)
         plan = await rolesync.plan_member(self.bot.db, interaction.guild, target)
         if plan.skipped:
             return await interaction.response.send_message(

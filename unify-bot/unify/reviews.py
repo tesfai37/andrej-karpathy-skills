@@ -6,20 +6,22 @@ writes guild data as a side effect of somebody asking."""
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from . import store
 from .db import Database
 
-KINDS = ("achievements", "register", "score", "parse")
+KINDS = ("run", "achievements", "register", "score", "parse")
 KIND_LABEL = {
+    "run": "Run",
     "achievements": "Achievements",
     "register": "Roster claim",
     "score": "Trial score",
     "parse": "Parse",
 }
-KIND_EMOJI = {"achievements": "🏅", "register": "👤", "score": "🏆", "parse": "⚔️"}
+KIND_EMOJI = {"run": "⚔️", "achievements": "🏅", "register": "👤", "score": "🏆", "parse": "📈"}
+ROLES_FOR_CLEARS = ("tank", "healer", "dps")
 
 
 # --------------------------------------------------------------------- routing
@@ -164,7 +166,11 @@ async def already_recorded(db: Database, member_id: int, role: str,
 
 async def duplicate_request(db: Database, kind: str, member_id: int | None,
                             role: str, payload: dict) -> int | None:
-    """An identical request already waiting. Returns its id, or None."""
+    """A waiting request that matches on every field given. Returns its id, or None.
+
+    Only the fields passed are compared, so callers can leave out the parts that
+    legitimately differ between two copies of the same claim, such as the raw
+    text of the post."""
     rows = await db.all(
         "SELECT id, payload FROM requests WHERE status = 'pending' AND kind = ? "
         "AND IFNULL(member_id, -1) = IFNULL(?, -1) AND role = ?",
@@ -172,10 +178,11 @@ async def duplicate_request(db: Database, kind: str, member_id: int | None,
     target = json.dumps(payload, sort_keys=True)
     for row in rows:
         try:
-            if json.dumps(json.loads(row["payload"]), sort_keys=True) == target:
-                return row["id"]
+            stored = json.loads(row["payload"])
         except json.JSONDecodeError:
             continue
+        if json.dumps({k: stored.get(k) for k in payload}, sort_keys=True) == target:
+            return row["id"]
     return None
 
 
@@ -185,6 +192,7 @@ class Applied:
     ok: bool
     summary: str
     member: store.Member | None = None
+    run: "RunResult | None" = None
 
 
 async def apply(db: Database, row, actor_id: int, actor_name: str) -> Applied:
@@ -195,12 +203,16 @@ async def apply(db: Database, row, actor_id: int, actor_name: str) -> Applied:
 
     if kind == "register":
         return await _apply_register(db, row, payload, actor_id, actor_name)
+    if kind == "run":
+        return await _apply_run(db, payload, actor_id, actor_name)
 
     member = await store.get_member(db, row["member_id"]) if row["member_id"] else None
     if member is None:
         return Applied(False, "that member is no longer on the roster")
 
     if kind == "achievements":
+        if row["role"] not in ROLES_FOR_CLEARS:
+            return Applied(False, "no role is set yet - pick Tank, Healer or DPS on the card")
         keys = payload.get("keys", [])
         added = await store.grant(db, member, row["role"], keys, actor_id, actor_name)
         return Applied(True,
@@ -220,6 +232,100 @@ async def apply(db: Database, row, actor_id: int, actor_name: str) -> Applied:
         return Applied(True, f"{label} = {dps:,}", member)
 
     return Applied(False, f"I don't know how to apply a '{kind}' request")
+
+
+@dataclass
+class RunResult:
+    recorded: list[tuple[store.Member, str, list[str]]] = field(default_factory=list)
+    no_role: list[store.Member] = field(default_factory=list)
+    gone: int = 0
+    score_raised: list[store.Member] = field(default_factory=list)
+    score_kept: list[store.Member] = field(default_factory=list)
+
+
+async def apply_run_parts(db: Database, payload: dict, actor_id: int,
+                          actor_name: str) -> RunResult:
+    """The shared work of recording a run: clears per person under their own role,
+    and the run's score for everyone in it, best score winning."""
+    out = RunResult()
+    keys = payload.get("keys", [])
+    for member_id, role in payload.get("members", []):
+        member = await store.get_member(db, member_id)
+        if member is None:
+            out.gone += 1
+            continue
+        if role not in ROLES_FOR_CLEARS:
+            out.no_role.append(member)
+            continue
+        if keys:
+            added = await store.grant(db, member, role, keys, actor_id, actor_name)
+            out.recorded.append((member, role, added))
+
+    score, trial = payload.get("score"), payload.get("trial", "")
+    if score and trial:
+        for member_id in payload.get("score_members", []):
+            member = await store.get_member(db, member_id)
+            if member is None:
+                continue
+            raised = await store.raise_score(db, member, trial, int(score), actor_id, actor_name)
+            (out.score_raised if raised else out.score_kept).append(member)
+    return out
+
+
+async def _apply_run(db: Database, payload: dict, actor_id: int, actor_name: str) -> Applied:
+    if payload.get("unmapped"):
+        return Applied(False, "this post is waiting on a role mapping - map the role "
+                              "and it comes back automatically")
+    if payload.get("score") and payload.get("trial"):
+        if not await db.one("SELECT 1 FROM trials WHERE key = ?", (payload["trial"],)):
+            return Applied(False, f"`{payload['trial']}` is no longer a trial I know")
+    if payload.get("members") and all(role not in ROLES_FOR_CLEARS
+                                      for _, role in payload["members"]):
+        return Applied(False, "nobody on this run has a role yet - pick Tank, Healer or "
+                              "DPS on the card first")
+
+    result = await apply_run_parts(db, payload, actor_id, actor_name)
+    bits = []
+    if result.recorded:
+        new = sum(1 for _, _, added in result.recorded if added)
+        bits.append(f"clears for {len(result.recorded)}"
+                    + (f" ({len(result.recorded) - new} already had them)"
+                       if new < len(result.recorded) else ""))
+    if result.score_raised or result.score_kept:
+        bits.append(f"{payload['trial']} score {int(payload['score']):,} for "
+                    f"{len(result.score_raised) + len(result.score_kept)}"
+                    + (f" ({len(result.score_kept)} already had better)"
+                       if result.score_kept else ""))
+    if result.no_role:
+        bits.append("not recorded, no role: "
+                    + ", ".join(m.gamertag for m in result.no_role))
+    if result.gone:
+        bits.append(f"{result.gone} no longer on the roster")
+    return Applied(True, "; ".join(bits) or "nothing new to record", run=result)
+
+
+async def set_role(db: Database, request_id: int, role: str) -> bool:
+    """An officer settling the role on a request that didn't say one. On a run it
+    fills in everyone whose role was unclear; roles that were given stay put."""
+    row = await get(db, request_id)
+    if row is None or row["status"] != "pending" or role not in ROLES_FOR_CLEARS:
+        return False
+    if row["kind"] == "run":
+        payload = json.loads(row["payload"] or "{}")
+        payload["members"] = [[mid, r if r in ROLES_FOR_CLEARS else role]
+                              for mid, r in payload.get("members", [])]
+        await db.run("UPDATE requests SET payload = ? WHERE id = ?",
+                     (json.dumps(payload), request_id))
+    else:
+        await db.run("UPDATE requests SET role = ? WHERE id = ?", (role, request_id))
+    return True
+
+
+def needs_role(row) -> bool:
+    if row["kind"] == "run":
+        members = json.loads(row["payload"] or "{}").get("members", [])
+        return any(r not in ROLES_FOR_CLEARS for _, r in members)
+    return row["kind"] == "achievements" and row["role"] not in ROLES_FOR_CLEARS
 
 
 async def _apply_register(db: Database, row, payload: dict,

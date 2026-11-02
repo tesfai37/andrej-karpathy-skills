@@ -14,10 +14,12 @@ async def members(interaction: discord.Interaction, current: str) -> list[app_co
     choices = []
     for m in found:
         label = m.gamertag
-        if m.discord_id and interaction.guild:
-            user = interaction.guild.get_member(m.discord_id)
-            if user:
-                label = f"{m.gamertag}  ({user.display_name})"
+        user = (interaction.guild.get_member(m.discord_id)
+                if m.discord_id and interaction.guild else None)
+        if user:
+            label = f"{m.gamertag}  ({user.display_name})"
+        elif m.legacy_name:
+            label = f"{m.gamertag}  ({m.legacy_name})"     # the name officers knew them by
         choices.append(app_commands.Choice(name=label[:100], value=m.gamertag))
     return choices
 

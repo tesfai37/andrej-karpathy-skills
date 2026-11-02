@@ -740,6 +740,495 @@ def test_gamertag_validation() -> None:
     for bad in ("", "x", "<@1234>", "a" * 41, "drop;table", "hi\nthere"):
         check(f"rejects {bad[:14]!r}", not GAMERTAG.match(bad))
 
+
+async def test_name_lookup() -> None:
+    """Officers identify people by Discord name, as the old !add_achievement did."""
+    print("\nfinding people by the name you know them by")
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        crow = await store.create_member(db, "A Crow Man.", None)
+        await db.run("UPDATE members SET legacy_name = 'crow.man' WHERE id = ?", (crow.id,))
+        sly = await store.create_member(db, "A Sly Man.", None)
+        await db.run("UPDATE members SET legacy_name = 'A Sly Man#9733' WHERE id = ?", (sly.id,))
+        for tag in ("I rekindle I.", "Sarraski X."):
+            m = await store.create_member(db, tag, None)
+            await db.run("UPDATE members SET legacy_name = 'kndl' WHERE id = ?", (m.id,))
+        await store.create_member(db, "S superballs B", None)
+        await store.create_member(db, "S superballs B.", None)
+
+        async def who(text):
+            got = await store.lookup_member(db, text)
+            return got.member.gamertag if got.member else [m.gamertag for m in got.candidates]
+
+        check("an old Discord name finds the gamertag", await who("crow.man") == "A Crow Man.")
+        check("the old #1234 suffix is optional", await who("a sly man") == "A Sly Man.")
+        check("…and accepted when given", await who("A Sly Man#9733") == "A Sly Man.")
+        check("the trailing dot is optional", await who("a crow man") == "A Crow Man.")
+        check("a name two people share is refused, not guessed",
+              await who("kndl") == ["I rekindle I.", "Sarraski X."], str(await who("kndl")))
+        check("two records differing only by a dot are both offered, not guessed",
+              await who("s superballs b..") == ["S superballs B", "S superballs B."],
+              str(await who("s superballs b..")))
+        check("an exact gamertag always wins", await who("S superballs B.") == "S superballs B.")
+        check("identity checks stay exact - no Discord-name fallback",
+              await store.find_member(db, "crow.man") is None)
+        check("nobody is invented for an unknown name", await who("nobody-at-all") == [])
+        await db.close()
+
+
+async def test_run_format() -> None:
+    """One post can record a whole run, and the guild's existing one-person
+    format keeps working exactly as before."""
+    print("\nreading a whole run from one post")
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        await db.run_many([
+            ("INSERT INTO role_map VALUES(?,?,?,?)", r) for r in [
+                (706551971401695233, "achievement", "vcrgh", "Gryphon Heart"),
+                (706551987799728168, "achievement", "extinguisher", "vSS HM"),
+                (706551988667203634, "achievement", "godslayer", "Godslayer"),
+                (706551977760260136, "role", "dps", "DPS"),
+            ]])
+        ids = [700000000000000000 + i for i in range(12)]
+        m = lambda i: f"<@{ids[i]}>"
+        parse = lambda text: parsing.parse_message(db, text)
+
+        p = await parse("<@804188183889051698> healer <@&706551971401695233>")
+        check("your existing one-person post still reads the same",
+              p.assignments == [(804188183889051698, "healer")] and p.keys == ["vcrgh"],
+              str(p.assignments))
+
+        p = await parse(" ".join(m(i) for i in range(12)) + " dps <@&706551987799728168>")
+        check("twelve people on one line all get the role",
+              len(p.assignments) == 12 and {r for _, r in p.assignments} == {"dps"})
+
+        run = ("<@&706551987799728168> <@&706551988667203634>\n"
+               f"tank: {m(0)} {m(1)}\nhealer: {m(2)} {m(3)}\n"
+               "dps: " + " ".join(m(i) for i in range(4, 12)))
+        p = await parse(run)
+        roles = dict(p.assignments)
+        check("a full run assigns each person their own role",
+              roles[ids[0]] == "tank" and roles[ids[3]] == "healer"
+              and sum(1 for r in roles.values() if r == "dps") == 8)
+        check("…and shares the achievements across all twelve",
+              p.keys == ["extinguisher", "godslayer"])
+
+        p = await parse(f"Tanks\n{m(0)} {m(1)}\nHealers\n{m(2)}")
+        check("a role on its own line carries down to the lines below",
+              dict(p.assignments) == {ids[0]: "tank", ids[1]: "tank", ids[2]: "healer"})
+
+        p = await parse(f"{m(0)} {m(1)}\ndps <@&706551987799728168>")
+        check("mentions with no role nearby take the post's only role",
+              {r for _, r in p.assignments} == {"dps"})
+
+        p = await parse(f"{m(0)} <@&706551977760260136> <@&706551987799728168>")
+        check("a pinged @DPS role counts as the role word",
+              p.assignments == [(ids[0], "dps")])
+
+        p = await parse(f"{m(0)} tank {m(1)} healer <@&706551987799728168>")
+        check("two roles on one line are left for an officer, not guessed",
+              {r for _, r in p.assignments} == {""})
+
+        p = await parse(f"tank: {m(0)}\ndps: {m(0)}\n<@&706551987799728168>")
+        check("one person under two roles is left for an officer",
+              p.assignments == [(ids[0], "")])
+
+        p = await parse(run + "\nscore: 257,498")
+        check("a score line gives the run's score", p.score == 257498)
+        check("…and its trial is inferred from the achievements", p.score_trial == "vss")
+
+        p = await parse(f"vss score 245,469k\ndps: {m(0)}")
+        check("a named trial wins, and the guild's stray k is ignored",
+              p.score == 245469 and p.score_trial == "vss", f"{p.score} {p.score_trial}")
+        check("…and naming the trial doesn't grant its clear", p.keys == [])
+
+        p = await parse(f"dps: {m(0)} {m(1)} - score to follow")
+        check("people on a score line are never dropped",
+              len(p.assignments) == 2, str(p.assignments))
+
+        p = await parse(f"score: 250000\ndps: {m(0)}\nvkahm extinguisher")
+        check("a score across two trials says it can't tell which",
+              p.score_trial == "" and "which trial" in p.score_note)
+
+        p = await parse("nice run everyone, what score did we get?")
+        check("chatter that mentions a score is ignored", p.is_empty)
+        await db.close()
+
+
+# --- just enough of Discord to drive the channel reader end to end -----------
+class FakeMember:
+    def __init__(self, uid, roles=(), admin=False):
+        from types import SimpleNamespace
+        self.id, self.bot, self.roles = uid, False, list(roles)
+        self.guild_permissions = SimpleNamespace(administrator=admin, manage_guild=False)
+        self.display_name = self.name = f"user{uid}"
+        self.global_name = None
+        self.mention = f"<@{uid}>"
+
+    def __str__(self):
+        return self.display_name
+
+
+class FakeServer:
+    def __init__(self, people):
+        self.people = {p.id: p for p in people}
+        self.members = list(people)
+
+    def get_member(self, uid):
+        return self.people.get(uid)
+
+
+class FakeShot:
+    content_type, size, filename, url = "image/png", 2048, "clear.png", "https://cdn.example/clear.png"
+
+    async def to_file(self, filename=None):
+        return discord.File(io.BytesIO(b"\x89PNG"), filename=filename or self.filename)
+
+
+class FakeSent:
+    def __init__(self, n, kwargs):
+        from types import SimpleNamespace
+        self.id, self.channel, self.kwargs = n, SimpleNamespace(id=2), kwargs
+
+
+class FakePost:
+    counter = 1000
+
+    def __init__(self, content, author, server, attachments=()):
+        FakePost.counter += 1
+        self.id = FakePost.counter
+        self.content, self.author, self.guild = content, author, server
+        self.attachments = list(attachments)
+        self.jump_url = f"https://discord.com/channels/1/2/{self.id}"
+        self.reactions, self.replies = [], []
+
+    async def add_reaction(self, emoji):
+        self.reactions.append(emoji)
+
+    async def reply(self, **kwargs):
+        FakePost.counter += 1
+        sent = FakeSent(FakePost.counter, kwargs)
+        self.replies.append(sent)
+        return sent
+
+
+class FakeBot:
+    def __init__(self, db):
+        self.db, self.brand = db, embeds.Brand()
+        self.overrides, self.cogs = {}, {}
+        self.acts, self.problems = [], []
+        self.channel = None
+
+    async def setting(self, key):
+        from unify.config import SETTING_DEFAULTS
+        return self.overrides.get(key, SETTING_DEFAULTS[key][1])
+
+    async def activity(self, action, detail):
+        self.acts.append((action, detail))
+
+    async def problem(self, title, detail):
+        self.problems.append(title)
+
+    async def sync_roles(self, *a, **k):
+        pass
+
+    async def audit(self, *a, **k):
+        pass
+
+    def get_user(self, uid):
+        return None
+
+    def get_cog(self, name):
+        return self.cogs.get(name)
+
+    async def channel_for(self, *keys):
+        return self.channel
+
+
+class FakeChannel:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, **kwargs):
+        FakePost.counter += 1
+        sent = FakeSent(FakePost.counter, kwargs)
+        self.sent.append(sent)
+        return sent
+
+
+class FakeInteraction:
+    """Records what a command said back, whether straight away or after deferring."""
+
+    def __init__(self, user):
+        from types import SimpleNamespace
+        self.user, self.said, self.deferred = user, [], False
+
+        async def send_message(**kwargs):
+            self.said.append(kwargs["embed"])
+
+        async def defer(**kwargs):
+            self.deferred = True
+
+        self.response = SimpleNamespace(send_message=send_message, defer=defer)
+        self.followup = SimpleNamespace(send=send_message)
+
+
+async def test_runs_end_to_end() -> None:
+    """The bug this round fixed: a run posted in one message used to record its
+    first person and silently drop the rest."""
+    print("\nwhole runs, through the real channel reader")
+    from unify.cogs.submissions import Submissions
+    from unify.cogs.reviewqueue import approve_one
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        await db.run("INSERT INTO role_map VALUES(706551987799728168,'achievement','extinguisher','vSS HM')")
+        LEAD_ROLE = 555000000000000001
+        await db.set_setting("recorder_roles", [LEAD_ROLE])
+
+        ids = [700000000000000000 + i for i in range(12)]
+        raiders = []
+        for i, d in enumerate(ids):
+            raiders.append(await store.create_member(db, f"RAIDER{i:02d}.", d))
+        lead = FakeMember(ids[0], roles=[type("R", (), {"id": LEAD_ROLE})()])
+        outsider_lead = FakeMember(799999999999999999, roles=[type("R", (), {"id": LEAD_ROLE})()])
+        pleb = FakeMember(ids[5])
+        server = FakeServer([lead, outsider_lead, pleb])
+
+        bot = FakeBot(db)
+        cog = Submissions(bot)
+        bot.cogs["Submissions"] = cog
+        mention = " ".join(f"<@{d}>" for d in ids)
+
+        async def requests():
+            return await db.all("SELECT * FROM requests WHERE status='pending'")
+
+        # 1. a recorder posts a run they weren't in
+        post = FakePost(f"{mention} dps <@&706551987799728168>", outsider_lead, server)
+        await cog.handle(post)
+        held = [len(await store.owned(db, r.id, "dps")) for r in raiders]
+        check("a lead posting a full run records all twelve, not one",
+              all(n == 5 for n in held), f"recorded for {sum(1 for n in held if n)} of 12")
+        check("…with nothing left for an officer", await requests() == [])
+        check("…and one ✅", post.reactions == ["✅"], str(post.reactions))
+
+        # 2. a recorder posts a run they were in: everyone else applies, they wait
+        await db.run("DELETE FROM member_achievements")
+        post = FakePost(f"{mention} dps <@&706551987799728168>", lead, server)
+        await cog.handle(post)
+        mine = await store.owned(db, raiders[0].id, "dps")
+        others = [len(await store.owned(db, r.id, "dps")) for r in raiders[1:]]
+        pending = await requests()
+        check("a lead's own clear waits, even inside their own run",
+              mine == set() and all(n == 5 for n in others))
+        check("…as one request, not one per person", len(pending) == 1
+              and json.loads(pending[0]["payload"])["members"] == [[raiders[0].id, "dps"]])
+
+        # 3. an ordinary member posts the same run: one request for all of it
+        await db.run("DELETE FROM member_achievements")
+        await db.run("DELETE FROM requests")
+        post = FakePost(f"{mention} dps <@&706551987799728168>", pleb, server, [FakeShot()])
+        await cog.handle(post)
+        pending = await requests()
+        check("a member's run becomes ONE request for twelve people",
+              len(pending) == 1 and len(json.loads(pending[0]["payload"])["members"]) == 12)
+        check("…which writes nothing on its own",
+              await db.val("SELECT COUNT(*) FROM member_achievements", (), 0) == 0)
+        check("…and keeps the screenshot", pending[0]["proof_url"] == FakeShot.url)
+        card_reply = post.replies[-1].kwargs
+        check("…copied onto the card itself, not linked",
+              "file" in card_reply and card_reply["embed"].image.url.startswith("attachment://"))
+
+        result = await approve_one(bot, pending[0], FakeMember(1, admin=True), server)
+        held = [len(await store.owned(db, r.id, "dps")) for r in raiders]
+        check("one approval records the whole run",
+              result.ok and all(n == 5 for n in held), result.summary)
+
+        # 4. a repost of the same run is recognised
+        await db.run("DELETE FROM member_achievements")
+        await db.run("DELETE FROM requests")
+        first = FakePost(f"{mention} dps <@&706551987799728168>", pleb, server)
+        await cog.handle(first)
+        again = FakePost(f"{mention}  dps <@&706551987799728168>", pleb, server)
+        await cog.handle(again)
+        check("posting the same run twice doesn't queue it twice",
+              len(await requests()) == 1 and "♻️" in again.reactions)
+
+        # 5. people who aren't on the roster are named, never silently skipped
+        await db.run("DELETE FROM requests")
+        stranger = 788888888888888888
+        post = FakePost(f"<@{ids[1]}> <@{stranger}> tank <@&706551987799728168>",
+                        outsider_lead, server)
+        await cog.handle(post)
+        said = post.replies[0].kwargs["embed"].description
+        check("someone not on the roster is reported by name",
+              f"<@{stranger}>" in said and "Not on the roster" in said)
+        check("…while the person who is gets recorded",
+              len(await store.owned(db, raiders[1].id, "tank")) == 5)
+        check("…and the officers hear about it", bot.problems[-1].startswith("Submission names"))
+        await db.close()
+
+
+async def test_run_scores() -> None:
+    print("\none score per run")
+    from unify.cogs.submissions import Submissions
+    from unify.cogs.reviewqueue import approve_one
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        LEAD_ROLE = 555000000000000001
+        await db.set_setting("recorder_roles", [LEAD_ROLE])
+        ids = [710000000000000000 + i for i in range(12)]
+        raiders = [await store.create_member(db, f"R{i:02d}.", d) for i, d in enumerate(ids)]
+        await store.set_score(db, raiders[3], "vss", 300000, 1, "t")   # already better
+
+        outsider = FakeMember(799999999999999998, roles=[type("R", (), {"id": LEAD_ROLE})()])
+        insider = FakeMember(ids[0], roles=[type("R", (), {"id": LEAD_ROLE})()])
+        server = FakeServer([outsider, insider])
+        bot = FakeBot(db)
+        cog = Submissions(bot)
+        bot.cogs["Submissions"] = cog
+        roster = "dps: " + " ".join(f"<@{d}>" for d in ids)
+
+        await cog.handle(FakePost(f"vss score 257,498\n{roster}", outsider, server))
+        scores = [await db.val("SELECT score FROM scores WHERE member_id=? AND trial_key='vss'",
+                               (r.id,)) for r in raiders]
+        check("a recorder's run score lands on all twelve at once",
+              sum(1 for v in scores if v == 257498) == 11, str(scores))
+        check("…but never lowers a better score someone already had", scores[3] == 300000)
+
+        await db.run("DELETE FROM scores")
+        await cog.handle(FakePost(f"vss score 261,000\n{roster}", insider, server))
+        pending = await db.all("SELECT * FROM requests WHERE status='pending'")
+        check("a lead's score for a run they were in waits for an officer",
+              await db.val("SELECT COUNT(*) FROM scores", (), 0) == 0 and len(pending) == 1)
+        result = await approve_one(bot, pending[0], FakeMember(1, admin=True), server)
+        check("…and one approval gives it to the whole run",
+              result.ok and await db.val("SELECT COUNT(*) FROM scores WHERE score=261000", (), 0) == 12,
+              result.summary)
+        await db.close()
+
+
+async def test_missing_role_is_fixable() -> None:
+    """Approving a queued post with no role used to write achievements under an
+    empty role that no profile could ever show."""
+    print("\na missing role is caught, then fixable")
+    from unify.cogs.submissions import Submissions
+    from unify.cogs.reviewqueue import approve_one
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        await db.run("INSERT INTO role_map VALUES(706551987799728168,'achievement','extinguisher','vSS HM')")
+        a = await store.create_member(db, "NOROLE.", 720000000000000001)
+        poster = FakeMember(720000000000000009)
+        bot = FakeBot(db)
+        cog = Submissions(bot)
+        bot.cogs["Submissions"] = cog
+        await cog.handle(FakePost(f"<@{a.discord_id}> <@&706551987799728168>", poster,
+                                  FakeServer([poster])))
+        row = (await db.all("SELECT * FROM requests WHERE status='pending'"))[0]
+        check("a post with no role is flagged as needing one", reviews.needs_role(row))
+        refused = await approve_one(bot, row, FakeMember(1, admin=True), FakeServer([]))
+        check("approving it without a role is refused", not refused.ok, refused.summary)
+        check("…and wrote nothing",
+              await db.val("SELECT COUNT(*) FROM member_achievements", (), 0) == 0)
+        await reviews.set_role(db, row["id"], "healer")
+        row = await reviews.get(db, row["id"])
+        done = await approve_one(bot, row, FakeMember(1, admin=True), FakeServer([]))
+        check("once a role is picked it records under that role",
+              done.ok and len(await store.owned(db, a.id, "healer")) == 5)
+        try:
+            await store.grant(db, a, "", ["vss"], 1, "t")
+            check("the core grant refuses an empty role outright", False)
+        except ValueError:
+            check("the core grant refuses an empty role outright", True)
+        await db.close()
+
+
+async def test_edits() -> None:
+    """A second edit to the same post used to be ignored."""
+    print("\nediting a post")
+    from unify.cogs.submissions import Submissions
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        await db.run("INSERT INTO role_map VALUES(706551987799728168,'achievement','extinguisher','vSS HM')")
+        await db.set_setting("submissions_channel", 2)
+        a = await store.create_member(db, "EDIT A.", 730000000000000001)
+        b = await store.create_member(db, "EDIT B.", 730000000000000002)
+        c = await store.create_member(db, "EDIT C.", 730000000000000003)
+        poster = FakeMember(730000000000000009)
+        server = FakeServer([poster])
+        bot = FakeBot(db)
+        bot.overrides["submissions_channel"] = 2
+        cog = Submissions(bot)
+        bot.cogs["Submissions"] = cog
+
+        post = FakePost(f"<@{a.discord_id}> dps <@&706551987799728168>", poster, server)
+        post.channel = type("C", (), {"id": 2, "mention": "#subs"})()
+        await cog.handle(post)
+
+        async def edit(text):
+            after = FakePost(text, poster, server)
+            after.jump_url, after.channel = post.jump_url, post.channel
+            before = type("B", (), {"content": "previous"})()
+            await cog.on_message_edit(before, after)
+
+        await edit(f"<@{a.discord_id}> <@{b.discord_id}> dps <@&706551987799728168>")
+        await edit(f"<@{a.discord_id}> <@{b.discord_id}> <@{c.discord_id}> dps <@&706551987799728168>")
+        live = await db.all("SELECT payload FROM requests WHERE status='pending'")
+        check("only the latest version of an edited post is waiting", len(live) == 1)
+        check("a second edit is read, not ignored",
+              len(json.loads(live[0]["payload"])["members"]) == 3,
+              str(json.loads(live[0]["payload"])["members"]))
+        await db.close()
+
+
+async def test_evidence_on_cards() -> None:
+    print("\nthe screenshot travels with every request")
+    from unify.cogs.membership import Membership
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        bot = FakeBot(db)
+        bot.channel = FakeChannel()
+        bot.overrides["member_submissions"] = True
+        cog = Membership(bot)
+        newcomer = FakeMember(740000000000000001)
+
+        class NotAPicture(FakeShot):
+            content_type, filename = "application/pdf", "clear.pdf"
+
+        class TooBig(FakeShot):
+            size = 9 * 1024 * 1024
+
+        for label, proof in (("no file", None), ("a pdf", NotAPicture()), ("a 9 MB image", TooBig())):
+            said = FakeInteraction(newcomer)
+            await cog.claim(said, "NEWBIE.", proof)
+            check(f"a claim with {label} is turned away",
+                  said.said and said.said[0].color == embeds.error("x").color
+                  and await db.val("SELECT COUNT(*) FROM requests", (), 0) == 0)
+
+        said = FakeInteraction(newcomer)
+        await cog.claim(said, "NEWBIE.", FakeShot())
+        row = await db.one("SELECT * FROM requests WHERE kind='register'")
+        card_sent = bot.channel.sent[-1].kwargs
+        check("a claim with a screenshot is raised", row is not None and said.deferred)
+        check("…its card carries the screenshot itself",
+              "file" in card_sent and card_sent["embed"].image.url == "attachment://proof.png")
+        check("…and has no role picker, since a claim has no role",
+              not any(isinstance(i, discord.ui.Select) for i in card_sent["view"].children))
+
+        member = await store.create_member(db, "SCORER.", 740000000000000002)
+        scorer = FakeMember(member.discord_id)
+        said = FakeInteraction(scorer)
+        await cog.submit_score.callback(cog, said, "vss", 250000, FakeShot())
+        check("a /submit score card carries its screenshot",
+              "file" in bot.channel.sent[-1].kwargs
+              and await db.val("SELECT COUNT(*) FROM requests WHERE kind='score'", (), 0) == 1)
+        said = FakeInteraction(scorer)
+        await cog.submit_parse.callback(cog, said, "Arcanist", 120000, FakeShot())
+        check("a /submit parse card carries its screenshot",
+              "file" in bot.channel.sent[-1].kwargs
+              and await db.val("SELECT COUNT(*) FROM requests WHERE kind='parse'", (), 0) == 1)
+        await db.close()
+
+
 async def main() -> None:
     await test_command_tree()
     await test_prerequisites()
@@ -760,6 +1249,13 @@ async def main() -> None:
     await test_member_input_is_inert()
     await test_leaderboard_top_n()
     test_gamertag_validation()
+    await test_name_lookup()
+    await test_run_format()
+    await test_runs_end_to_end()
+    await test_run_scores()
+    await test_missing_role_is_fixable()
+    await test_edits()
+    await test_evidence_on_cards()
     print()
     if failures:
         print(f"{len(failures)} check(s) failed: {', '.join(failures)}")

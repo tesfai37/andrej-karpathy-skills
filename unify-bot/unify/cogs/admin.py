@@ -1,13 +1,12 @@
 """Admin commands. Every one of them writes to the audit log and can be undone."""
 from __future__ import annotations
 
-import re
-
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from .. import autocomplete, embeds, store, views
+from ..store import strip_discriminator
 from ..checks import admin_only
 from ..config import ROLES, ROLE_LABEL
 
@@ -16,20 +15,16 @@ ROLE_CHOICES = [app_commands.Choice(name=ROLE_LABEL[r], value=r) for r in ROLES]
 ]
 
 
-def strip_discriminator(name: str) -> str:
-    """"A Sly Man#9733" and "A Sly Man" are the same person - Discord retired
-    the #1234 suffix, but the old spreadsheet still carries it."""
-    return re.sub(r"#\d{4}$", "", str(name or "").strip()).strip().lower()
 
 
 async def need_member(interaction: discord.Interaction, query: str) -> store.Member | None:
-    found = await store.find_member(interaction.client.db, query)
-    if found is None:
+    """Accepts a gamertag, a Discord name (old or current) or a mention - the way
+    officers are used to identifying people."""
+    found = await store.lookup_member(interaction.client.db, query, interaction.guild)
+    if found.member is None:
         await interaction.response.send_message(
-            embed=embeds.error(
-                f"No record for **{query}**. Add them first with `/member add`."),
-            ephemeral=True)
-    return found
+            embed=embeds.no_match(query, found.candidates), ephemeral=True)
+    return found.member
 
 
 class Admin(commands.Cog):
