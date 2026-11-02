@@ -60,6 +60,18 @@ One screen, no typing:
 Server administrators always count as officers, so you can't lock yourself out.
 The activity and problem log channels are set separately with `/config channel`.
 
+Then run:
+
+```
+/status
+```
+
+It says in plain English who can record, what members can do and where
+everything goes, and lists anything that's quietly broken: no submissions
+channel, a channel that was deleted, a permission the bot is missing, @everyone
+picked as an officer or recorder role, or a roster nobody is linked to yet.
+Run it again whenever something seems off.
+
 ---
 
 ## 3. Teach it your roles
@@ -109,7 +121,8 @@ compares against what came out. Read-only on both.
 ### Linking Discord accounts
 
 The old file stored display names, not account IDs, so nobody is linked after a
-migration. Fix it in one command:
+migration. **Do this before anyone posts**: until it's done, every post that
+@mentions people comes back "not on the roster". Fix it in one command:
 
 ```
 /member match
@@ -117,7 +130,12 @@ migration. Fix it in one command:
 
 It looks every saved name up against your server, takes only exact unambiguous
 matches, shows you a preview, and skips any account two roster entries both claim.
-`/undo` reverses the whole batch.
+`/undo` reverses the whole batch. Anyone it can't match can claim their gamertag
+themselves, or you link them with `/member link`.
+
+Looking people up works by Discord name straight away, linked or not: typing
+`budman008` into `/profile` or any officer command finds BUDMAN008. from the
+saved name.
 
 ### From a spreadsheet
 
@@ -145,35 +163,55 @@ parses — is in one place:
 ```
 
 Eight at a time, with **Approve this page**, or pick individual ones from the
-menu and **Approve selected**. Each entry says why it needs you.
+menu and **Approve selected**. Each entry says why it needs you, and 📎 marks
+the ones with a screenshot.
 
-Requests also get a card in your admin log channel, so you can approve without
-running the command. Both routes go through the same code.
+You can also approve from the **card**, without running anything. A channel
+post gets its card as a reply right under the post; `/register` and `/submit`
+cards go to your admin log channel. Both routes go through the same code.
+
+**A whole run is one card.** It lists everyone in the post under their role,
+the achievements and the run's score, with the screenshot copied onto the card
+itself, since Discord's own attachment links expire. One **Approve** records
+the whole run.
+
+**A missing role is never guessed.** If anyone in the post has no clear role,
+the card says *No clear role — pick one below* and shows a Tank / Healer / DPS
+menu. Approve refuses until a role is picked. In `/queue` the same menu sets
+the role for everything you've selected.
 
 ### Who is allowed to record
 
-`submission_mode` has three settings:
+`submission_mode` has two settings:
 
 | Mode | Who causes a write |
 | --- | --- |
 | `review` | Nobody. Every submission queues. |
-| `trusted` *(default)* | Only people holding a **recorder role** — and never for themselves. |
-| `auto` | Anyone posting in the channel, but still never for themselves. |
+| `trusted` *(default)* | Officers and people holding a **recorder role** — and never for themselves. |
+
+There is deliberately no mode where a member's own post records anything. The
+old `auto` mode is gone; a server that was on it starts up on `trusted`.
 
 Set recorder roles in `/setup` or with `/config roles key:recorder_roles`. This is
 how you scale past two people: give your raid leads the role, and audit after the
-fact instead of gating everything beforehand.
+fact instead of gating everything beforehand. The Monday briefing is that audit.
 
-**A recorder can never record their own clear.** In every mode, a submission where
-the poster is also the subject goes to the queue. That hole would otherwise be the
-easiest one to walk through.
+**Nobody can record their own clear.** In every mode, the poster's own line in a
+post goes to the queue while everyone else in the run is recorded. That hole
+would otherwise be the easiest one to walk through.
+
+**Scores work the same way.** A recorder's run score goes on everyone in the run
+at once, unless the recorder was in the run, in which case it waits for you. A
+score is only ever raised: anyone who already has a better one keeps it.
 
 ### What members can and cannot do
 
 Nothing a member types changes a row. `/register`, `/submit score` and
 `/submit parse` only ever create a request. Approval is the only write.
 
-- `registration` — lets members raise a roster claim. On by default; still approved.
+- `registration` — lets members raise a roster claim, either with `/register`
+  or the **Claim my gamertag** button on their welcome card. On by default; a
+  screenshot of their gamertag is required, and you still approve it.
 - `member_submissions` — lets members send scores and parses with a screenshot.
   **Off** by default. Proof is mandatory when on.
 
@@ -189,6 +227,36 @@ Nothing a member types changes a row. `/register`, `/submit score` and
 Giving fills in prerequisites automatically. Taking cascades the other way — remove
 `vss` and everything that depended on it goes too, so nobody is ever left claiming
 a hard mode without the clear.
+
+### Still typing the old `!` commands?
+
+Go ahead. The bot answers each old command with its new slash command, filled in
+from what you typed:
+
+```
+!add_achievement [vcrgh][inkeddragonmami][healer]
+→  /achievement give member:inkeddragonmami role:healer achievements:vcrgh
+```
+
+It **never runs** the old command — it only shows you the new one, which you send
+yourself, so the officer check and the audit log still apply. Every command on the
+old list is covered, `_g` versions included:
+
+| Old | New |
+| --- | --- |
+| `!info` `!clears` | `/profile member:` |
+| `!tank` `!healer` `!dps` | `/profile member: role:` |
+| `!parse` | `/profile member:`, then 🏆 **Scores & parses** |
+| `!add_achievement` | `/achievement give` |
+| `!remove_achievement` | `/achievement take` |
+| `!add_parse` | `/record parse` |
+| `!update_name` | `/member link` |
+| `!update_tag` | `/member rename` |
+| `!cp` `!link` `!setup` `!craft` `!farming` | `/guide show` |
+| `!export` | `/export` |
+| `!command` | `/help` |
+
+One answer per person every 20 seconds, so nobody can use it to make the bot spam.
 
 ### The roster
 
@@ -301,6 +369,13 @@ waiting and of what sort, how old the oldest is, how many achievements still hav
 no Discord role, how many roster entries aren't linked, and how much changed
 yesterday. If you read one thing a day, read that.
 
+**On Mondays it adds _Who recorded what this week_**: one line per recorder or
+officer with how many achievements they recorded, for how many people, and how
+many were titles. Recorders write without a review, so this is your check on
+them. A line gets a ⚠️ when someone recorded at least 10 achievements and 60% or
+more went to the same three people. That isn't proof of anything, but it's worth
+a look with `/audit actor:`.
+
 ### Retention
 
 `audit_days` (default 365) prunes audit entries and decided requests older than
@@ -322,12 +397,16 @@ that, so exports don't get slower forever. Set it to `0` to keep everything.
 Every admin action writes its own inverse, so `/undo` is a real undo, not a guess.
 Bulk imports are the exception.
 
+Start with `/status`: it names most of these for you.
+
 | Symptom | Fix |
 | --- | --- |
 | Slash commands don't appear | Check `GUILD_ID` in `.env`, restart. Without it they take up to an hour. |
-| Bot ignores the achievements channel | `/config show` — is `submissions_channel` set? Is **Message Content Intent** on? |
-| "I don't know what @X means yet" | `/map role` on that role, or press the button in the message |
-| "I couldn't tell who this is for" | `/member add` them, or `/member link` |
+| Bot ignores the achievements channel | `/status` — is `submissions_channel` set, and can the bot see and reply there? Is **Message Content Intent** on? |
+| Every post says ❓ *Not on the roster* | Nobody is linked yet. Run `/member match`. |
+| "I don't know what @X means yet" | `/map role` on that role, or press the button in the message. The post is read again. |
+| "Not on the roster" for one person | `/member add` them, or `/member link` |
+| Approve says nobody has a role yet | Pick Tank, Healer or DPS from the menu on the card, then Approve |
 | `/member match` says it can only see itself | **Server Members Intent** is off. Turn it on, restart. |
 | `/sync` skips roles | `/sync check` — the bot's role needs to sit above them |
 | An achievement's name is wrong | `/achievement rename` |
@@ -337,8 +416,9 @@ Bulk imports are the exception.
 
 ## Settings reference
 
-`/config show` lists these with their current values. Channels use
-`/config channel`, role lists use `/config roles`, everything else `/config set`.
+`/config show` lists these with their current values, grouped by what they're
+for, and flags the channels that must be set. Channels use `/config channel`,
+role lists use `/config roles`, everything else `/config set`.
 
 | Key | Default | What it controls |
 | --- | --- | --- |
@@ -351,7 +431,7 @@ Bulk imports are the exception.
 | `reports_channel` | — | Weekly report and backup |
 | `admin_roles` | — | Who can change data |
 | `viewer_roles` | — | Who can look people up (empty = everyone) |
-| `submission_mode` | `trusted` | `review`, `trusted` or `auto` |
+| `submission_mode` | `trusted` | `review` or `trusted` |
 | `notify_dm` | `true` | DM members when they earn something |
 | `mark_label` | `Legacy` | Name for the `L` marker |
 | `role_sync` | `false` | Hand out Discord roles automatically |

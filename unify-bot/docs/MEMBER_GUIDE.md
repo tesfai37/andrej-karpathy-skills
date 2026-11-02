@@ -26,21 +26,60 @@ The bot reads it and works out three things:
 It then records **Sunspire, Lokkestiiz HM and Yolnahkriin HM** — the base clear
 comes along automatically, because you can't have a hard mode without it.
 
-**Three rules that make it work every time:**
+### A whole run in one post
+
+Raid leads can post the full group at once instead of twelve separate posts:
+
+```
+@vSS HM @Godslayer
+vss score 257,498
+tank: @a @b
+healer: @c @d
+dps: @e @f @g @h @i @j @k @l
+```
+
+- A role on a line counts for **everyone mentioned on that line**.
+- A role on a line of its own counts for the lines below it, until the next role.
+- If the whole post names only one role, everybody gets it.
+- A line with the word **score** gives the run's score to everyone in the run.
+  Name the trial on that line, or the bot works it out from the achievements.
+- Two roles on one line, or one person under two roles, is left for an officer
+  to sort out. The bot never guesses.
+
+**Four rules that make it work every time:**
 
 1. **@mention the person.** Their nickname typed as text is a guess; a mention is
    certain. If they aren't on the roster yet the bot says so instead of guessing.
 2. **Say the role** — `tank`, `healer` or `dps`, typed or pinged. Leave it out and
-   the bot posts a little menu asking which one.
+   the post waits for an officer to pick one.
 3. **Ping the achievement roles**, don't type their names.
+4. **Attach the screenshot.** It's copied onto the card the officer checks.
 
-Depending on how your officers set it up, the bot either records it straight away
-(✅ reaction) or posts an **Approve / Reject** card for an officer (⏳ reaction).
+### Who records it
 
-**If something goes wrong it tells you** — it never silently drops a post:
+| Who posted | What happens |
+| --- | --- |
+| A raid lead or officer, for other people | Recorded straight away ✅ |
+| Anyone, for **their own** clear | Waits for an officer ⏳, raid leads included |
+| Everybody else | Waits for an officer ⏳ |
 
-- ❓ *"I don't know what @Some Role means yet"* — an officer taps a button to teach it
-- ❓ *"I couldn't tell who this is for"* — @mention them, or ask an officer to add them
+If your officers have set the bot to review everything, every post waits.
+Nobody can record their own clear. A score never goes down: if someone already
+has a better one for that trial, they keep it.
+
+The bot answers once, with what happened to everyone in the post:
+
+| You see | It means |
+| --- | --- |
+| ✅ Recorded for 11 | Done |
+| ⏳ Waiting for an officer | An officer approves it from a card under your post |
+| 🏆 vss score 257,498 for 11 | The run's score went on everyone who didn't have better |
+| ♻️ Already had it | Nothing new to record |
+| ❓ Not on the roster | That person needs `/register`, or an officer to add them |
+| ❓ I don't know what @Some Role means yet | An officer teaches it, and your post is read again |
+
+Made a mistake? **Edit the post** and the bot reads it again. An edit can add
+people, but it can't take back anything that's already been recorded.
 
 You'll get a DM when something lands on your record. Officers can turn that off
 server-wide, but you can also just mute the bot.
@@ -49,20 +88,24 @@ server-wide, but you can also just mute the bot.
 
 ## Getting on the roster
 
-```
-/register gamertag: YourName.
-```
-
-This **asks** an officer to link your gamertag to your Discord account. It does
-not link anything by itself — an officer approves it first, and if the gamertag
-already has a record they'll check carefully before handing it over.
+Tap **Claim my gamertag** on your welcome card, or type:
 
 ```
-/whoami
+/register  gamertag: YourName.  proof: <screenshot>
 ```
 
-Where you stand: whether you're linked, what's recorded, and anything of yours
-still waiting on an officer. Only you can see it.
+Either way you send a **screenshot of your gamertag in game**. This only *asks*
+an officer to link your gamertag to your Discord account. Nothing is linked until
+an officer has looked at the screenshot and approved it, and if the gamertag
+already has a record they check it carefully before handing it over.
+
+```
+/me
+```
+
+Your card, plus anything of yours still waiting on an officer: a claim, a score,
+or a run you were in. Before you're linked it tells you where you stand instead.
+The waiting list is only shown to you.
 
 ### Sending in a score or a parse
 
@@ -130,14 +173,15 @@ run `/me` or `/profile` yourself to get one you can drive.
 /profile member: bud
 ```
 
-Start typing a gamertag and the list narrows as you go — pick from the
-suggestions. Or use the `user:` option and pick them from the server instead.
+Start typing a gamertag **or their Discord name** and the list narrows as you go —
+pick from the suggestions. Or use the `user:` option and pick them from the
+server instead. If a name could be more than one person, the bot lists who it
+could be rather than guessing.
 
 | Command | What you get |
 | --- | --- |
 | `/profile` | Their achievement card, with the same menus |
-| `/score` | Their trial scores, and the total |
-| `/parse` | Their parse numbers, best first |
+| 🏆 **Scores & parses** on the card | Their trial scores with the total, and their parses, best first |
 | `/roster` | Everybody in the guild, paginated |
 
 `/roster search: bud` filters the list.
@@ -202,11 +246,25 @@ The CP builds, channel directories and setups the officers maintain.
 
 ```
 /guide show  topic: cp · 2100dps
-/guide list
+/guide show
 ```
 
 One search box covers every category — start typing `magblade`, `tank`, `vss`,
-whatever you're after. `/guide list` shows everything grouped by category.
+whatever you're after. Leave the topic blank to see everything, grouped by
+category.
+
+---
+
+## Still typing the old `!` commands?
+
+That's fine. Type one and the bot answers with the new command, filled in:
+
+```
+!info budman008     →   /profile member:budman008
+!cp magblade        →   /guide show topic:cp/magblade
+```
+
+It never runs the old command. It only shows you the new one to send.
 
 ---
 
@@ -216,13 +274,13 @@ whatever you're after. `/guide list` shows everything grouped by category.
 | --- | --- |
 | See my own card | `/me` |
 | Look somebody up | `/profile` |
-| See their scores or parses | `/score` · `/parse` |
+| See their scores or parses | `/profile`, then 🏆 **Scores & parses** |
 | Find people for a run | `/find` |
 | See who's on top | `/leaderboard` |
 | See how the guild is doing | `/stats` |
 | Look up a CP build or link list | `/guide show` |
 | See everyone | `/roster` |
-| Get on the roster | `/register` |
-| Check my link and what's pending | `/whoami` |
+| Get on the roster | **Claim my gamertag** on your welcome card, or `/register` |
+| Check my link and what's pending | `/me` |
 | Send in a score or parse | `/submit score` · `/submit parse` |
 | Work out what else it does | `/help` |

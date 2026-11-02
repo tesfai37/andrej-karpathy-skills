@@ -69,13 +69,17 @@ You should see `logged in as Unify#1234`. Leave it running.
 
 ### 4. Run `/setup` in Discord
 
-Type `/setup` in any channel. One screen, four things, all dropdowns:
+Type `/setup` in any channel. One screen, all dropdowns:
 
 1. **Submissions channel** — where people post their clears
 2. **Admin log channel** — where the bot writes what changed
 3. **Admin roles** — who is allowed to change data
-4. **Auto-map roles** — press it and the bot matches your existing Discord roles
+4. **Recorder roles** — raid leads, who may record for *other* people
+5. **Auto-map roles** — press it and the bot matches your existing Discord roles
    to achievements by name
+
+Then type `/status`. It explains the whole setup in plain English and lists
+anything that's quietly broken, like a missing channel or permission.
 
 That's the install finished.
 
@@ -150,6 +154,23 @@ The bot reads it and works out:
 …then records `vss`, `vssice` and `vssfire` — because both hard modes require
 the base clear, and the bot fills prerequisites in by itself.
 
+A raid lead can post a **whole run** in one message, score included:
+
+```
+@vSS HM @Godslayer
+vss score 257,498
+tank: @a @b
+healer: @c @d
+dps: @e @f @g @h @i @j @k @l
+```
+
+A role on a line counts for everyone mentioned on that line, and a role on a
+line of its own carries down to the lines below. Each person is handled on
+their own, so one post can record eleven people while the poster's own line
+waits for an officer. Two roles for one person is never guessed. The run's
+score goes on everyone in it, and never lowers a better score someone already
+has. An attached screenshot is copied onto the officer's card.
+
 ### Who causes a write
 
 Nobody's word is taken for it. `submission_mode` decides who can record without
@@ -158,10 +179,10 @@ an officer looking:
 | Mode | Applies immediately for |
 | --- | --- |
 | `review` | nobody — everything queues |
-| `trusted` *(default)* | holders of a **recorder role**, set with `/config roles key:recorder_roles` |
-| `auto` | anyone posting in the channel |
+| `trusted` *(default)* | officers and holders of a **recorder role**, set with `/config roles key:recorder_roles` |
 
-Four guards hold in **every** mode, including `auto`:
+There is no mode where a member's own post records anything. Four guards hold
+in **both** modes:
 
 - a poster can never record their **own** clear — that always queues
 - an unknown member queues
@@ -177,6 +198,8 @@ says so in the channel:
   and the post is **held** so mapping the role replays it
 - ❓ *"I couldn't tell who this is for"* → the poster @mentions them or types
   their exact gamertag
+- ❓ *"Not on the roster"* → the bot names exactly who, records everyone else,
+  and they can `/register` or an officer can `/member add` them
 - ♻️ already recorded → the bot says so and does nothing
 
 ---
@@ -213,8 +236,11 @@ python tools/verify_migration.py /path/to/old/database.db data/unify.sqlite3
 
 Nobody is linked to a Discord account by the migration, because the old file
 stored display names (`crow.man`, `A Sly Man#9733`) rather than account ids.
-Run **`/member match`** afterwards — it looks every saved name up against your
-server and links the exact, unambiguous matches in one confirmed batch.
+Run **`/member match`** before anyone posts — until then every post that
+@mentions people comes back "not on the roster", and `/status` says so. It looks
+every saved name up against your server and links the exact, unambiguous matches
+in one confirmed batch. Looking people up by their old Discord name works
+straight away either way.
 
 ### The `L` marker — legacy records
 
@@ -285,14 +311,14 @@ without the bosses it needs, the import fills those in. Your current file has
 
 | Command | What it does |
 | --- | --- |
-| `/me` | Your own achievement card |
-| `/profile` | Look somebody up — start typing, the list narrows as you go |
+| `/me` | Your own achievement card, and anything of yours waiting on an officer |
+| `/profile` | Look somebody up by gamertag or Discord name; **Scores & parses** is a button on the card |
 | `/find` | Who has (and hasn't) cleared what — the group-building question |
-| `/guide show` · `list` | CP builds, channel links, setups |
+| `/guide show` | CP builds, channel links, setups — leave the topic blank for everything |
 | `/leaderboard` | Points, achievements, scores or parses |
 | `/stats` | How the guild is doing overall |
-| `/score` · `/parse` | Somebody's numbers |
 | `/roster` | Everybody, paginated |
+| `/register` | Ask to be linked, with a screenshot — or tap **Claim my gamertag** on the welcome card |
 | `/help` | A menu, not a wall of text |
 
 The profile card opens on a summary: a progress bar per trial you've actually
@@ -303,6 +329,8 @@ menus underneath switch role or open a single trial for the boss-by-boss list.
 
 | Command | What it does |
 | --- | --- |
+| `/status` | The whole setup in plain English, and anything broken |
+| `/queue` | Everything waiting on an officer, approved in batches |
 | `/member add` · `link` · `rename` · `remove` | Roster |
 | `/achievement give` · `take` | Grant or remove — prerequisites handled |
 | `/record score` · `/record parse` | Numbers |
@@ -313,6 +341,14 @@ menus underneath switch role or open a single trial for the boss-by-boss list.
 | `/undo` | Reverse the last change (or `/undo 42` for a specific one) |
 | `/sync check` · `all` · `member` | Hand out the Discord roles people have earned |
 | `/config show` · `set` · `channel` · `roles` | Settings |
+
+Still typing the old `!add_achievement [vcrgh][inkeddragonmami][healer]`? The bot
+answers with the slash command filled in, here
+`/achievement give member:inkeddragonmami role:healer achievements:vcrgh`, and
+never runs it. Every old command is covered; the table is in the officer guide.
+
+Every Monday the morning briefing adds who recorded what that week, and flags a
+recorder whose work mostly went to the same few people.
 
 ---
 
@@ -404,7 +440,7 @@ in Discord instead of writing SQL.
 
 ```
 /guide show   topic: cp · 2100dps      ← one search box across every category
-/guide list                            ← everything, grouped
+/guide show                            ← no topic: everything, grouped
 /guide save   category: cp  topic: magcro    ← opens a text box for the build
 /guide delete topic: cp · magcro
 ```
@@ -416,7 +452,8 @@ as-is. Your 60 existing entries come across with the migration.
 
 ## Settings reference
 
-`/config show` lists all of these with their current values.
+`/config show` lists all of these with their current values, grouped by what
+they're for.
 
 | Key | What it controls |
 | --- | --- |
@@ -427,7 +464,7 @@ as-is. Your 60 existing entries come across with the migration.
 | `reports_channel` | Weekly report + backup |
 | `admin_roles` | Who can change data |
 | `viewer_roles` | Who can look people up (empty = everyone) |
-| `submission_mode` | `review`, `trusted` or `auto` |
+| `submission_mode` | `review` or `trusted` |
 | `notify_dm` | DM members when they earn something |
 | `mark_label` | What the `L` marker from the old sheet means |
 | `role_sync` | Hand out Discord roles automatically when achievements are earned |
@@ -441,10 +478,13 @@ as-is. Your 60 existing entries come across with the migration.
 
 ## If something goes wrong
 
+Start with `/status` — it names most of these for you.
+
 | Symptom | Fix |
 | --- | --- |
 | Slash commands don't appear | Check `GUILD_ID` in `.env`, then restart the bot. Without it commands take up to an hour to show up. |
-| The bot ignores the submissions channel | `/config show` — is `submissions_channel` set? Is **Message Content Intent** on in the developer portal? |
+| The bot ignores the submissions channel | `/status` — is `submissions_channel` set, and can the bot see and reply there? Is **Message Content Intent** on in the developer portal? |
+| Every post says *"Not on the roster"* | Nobody is linked yet. Run `/member match`. |
 | "I don't know what @X means yet" | `/map role` on that role, or press the button in the message. |
 | "I couldn't tell who this is for" | `/member add` them, or `/member link` their gamertag to their Discord account. |
 | Wrong data got in | `/undo`. For something older, `/audit` to find the number, then `/undo 42`. |
