@@ -29,6 +29,7 @@ from .. import embeds, parsing, reviews, store
 from ..checks import member_is_recorder, user_is_admin
 from ..config import ROLE_EMOJI, ROLE_LABEL
 from .mapping import MapRoleView
+from .oldcommands import translate
 from .reviewqueue import post_card, usable_proof
 
 JUMP_RE = re.compile(r"/channels/(\d+)/(\d+)/(\d+)")
@@ -80,6 +81,8 @@ class Submissions(commands.Cog):
     async def watched(self, message: discord.Message) -> bool:
         if message.author.bot or message.guild is None:
             return False
+        if translate(message.content) is not None:
+            return False        # an old ! command: the translator answers it, nothing is read
         channel_id = await self.bot.setting("submissions_channel")
         return bool(channel_id) and message.channel.id == int(channel_id)
 

@@ -994,7 +994,11 @@ class FakeInteraction:
         async def defer(**kwargs):
             self.deferred = True
 
-        self.response = SimpleNamespace(send_message=send_message, defer=defer)
+        async def send_modal(modal):
+            self.sent.append({"modal": modal})
+
+        self.response = SimpleNamespace(send_message=send_message, defer=defer,
+                                        send_modal=send_modal)
         self.followup = SimpleNamespace(send=send_message)
 
     async def original_response(self):
@@ -1341,6 +1345,11 @@ async def test_status() -> None:
         check("role sync without Manage Roles is called out", "Manage Roles" in problems)
         check("review mode is explained", "**every** post waits" in said(bad, "Who"))
 
+        await db.run("INSERT INTO members(gamertag, legacy_name) VALUES('MIGRATED.', 'migrated')")
+        fresh_import = await status_report(bot, guild)
+        check("a roster nobody's linked to yet points at /member match",
+              "/member match" in said(fresh_import, "Fix"))
+
         bot.overrides["submissions_channel"] = 760000000000000099
         gone = await status_report(bot, guild)
         check("a deleted channel is noticed", "was deleted" in said(gone, "Fix")
@@ -1423,6 +1432,162 @@ async def test_folded_commands() -> None:
         await db.close()
 
 
+async def test_claim_button() -> None:
+    print("\nthe welcome card's claim button")
+    from unify.cogs.membership import Membership
+    from unify.cogs.welcome import CLAIM_ID, ClaimModal, ClaimView, Welcome
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        bot = FakeBot(db)
+        bot.channel = FakeChannel()
+        bot.cogs["Membership"] = Membership(bot)
+        welcome_channel = FakeChannel()
+        bot.overrides["welcome_channel"] = 3
+        bot.get_channel = {3: welcome_channel}.get
+
+        view = ClaimView()
+        check("the button survives a restart",
+              view.is_persistent() and view.children[0].custom_id == CLAIM_ID)
+
+        newcomer = FakeMember(780000000000000001)
+        await Welcome(bot).on_member_join(newcomer)
+        check("a newcomer's welcome card has the claim button",
+              isinstance(welcome_channel.sent[-1].kwargs["view"], ClaimView))
+
+        tapped = FakeInteraction(newcomer, bot)
+        await view.claim.callback(tapped)
+        check("tapping it opens the claim form", isinstance(tapped.sent[0].get("modal"), ClaimModal))
+
+        form = ClaimModal()
+        form.gamertag.component._value = "  NEWCOMER.  "
+        form.proof.component._values = [FakeShot()]
+        sent = FakeInteraction(newcomer, bot)
+        await form.on_submit(sent)
+        row = await db.one("SELECT * FROM requests WHERE kind = 'register'")
+        check("sending the form raises the same claim /register does",
+              row is not None and row["subject"] == "NEWCOMER." and row["requester_id"] == newcomer.id)
+        check("…with the screenshot on the officers' card", "file" in bot.channel.sent[-1].kwargs)
+        check("…and nothing is linked until an officer approves it",
+              await store.find_member(db, newcomer.id) is None)
+
+        tapped = FakeInteraction(newcomer, bot)
+        await view.claim.callback(tapped)
+        check("tapping again while waiting says so, without a form",
+              "already have claim" in tapped.said[0].description and not any(
+                  "modal" in c for c in tapped.sent))
+
+        linked = FakeMember(780000000000000002)
+        await store.create_member(db, "LINKED.", linked.id)
+        await Welcome(bot).on_member_join(linked)
+        check("someone already linked gets no button", welcome_channel.sent[-1].kwargs["view"] is None)
+        tapped = FakeInteraction(linked, bot)
+        await view.claim.callback(tapped)
+        check("…and is told who they already are", "already **LINKED.**" in tapped.said[0].description)
+
+        bot.overrides["registration"] = False
+        await Welcome(bot).on_member_join(FakeMember(780000000000000003))
+        check("with registration off there's no button", welcome_channel.sent[-1].kwargs["view"] is None)
+        await db.close()
+
+
+async def test_old_commands() -> None:
+    """Officers will keep typing the old commands for a while. Each one gets the
+    new slash command back, filled in, and nothing is ever run."""
+    print("\nold ! commands")
+    from types import SimpleNamespace
+    from unify.cogs.oldcommands import OldCommands, translate
+    from unify.cogs.submissions import Submissions
+    cases = {
+        # the guild's own sample, exactly as an officer types it today
+        "!add_achievement [vcrgh][inkeddragonmami][healer]":
+            "/achievement give member:inkeddragonmami role:healer achievements:vcrgh",
+        "!add_achievement_g [vss vsshm] [BUDMAN008.] [Tank]":
+            "/achievement give member:BUDMAN008. role:tank achievements:vss vsshm",
+        "!remove_achievement [vka][budman008][dps]":
+            "/achievement take member:budman008 role:dps achievements:vka",
+        "!remove_achievement_g [VKA][BUDMAN008.][heals]":
+            "/achievement take member:BUDMAN008. role:healer achievements:vka",
+        "!info budman008": "/profile member:budman008",
+        "!info_g BUDMAN008.": "/profile member:BUDMAN008.",
+        "!clears budman008": "/profile member:budman008",
+        "!clears_g BUDMAN008.": "/profile member:BUDMAN008.",
+        "!tank budman008": "/profile member:budman008 role:tank",
+        "!tank_g BUDMAN008.": "/profile member:BUDMAN008. role:tank",
+        "!healer budman008": "/profile member:budman008 role:healer",
+        "!healer_g BUDMAN008.": "/profile member:BUDMAN008. role:healer",
+        "!dps budman008": "/profile member:budman008 role:dps",
+        "!dps_g BUDMAN008.": "/profile member:BUDMAN008. role:dps",
+        "!parse budman008": "/profile member:budman008",
+        "!parse_g BUDMAN008.": "/profile member:BUDMAN008.",
+        "!add_parse [95000] [Arcanist] [budman008]":
+            "/record parse member:budman008 label:Arcanist dps:95000",
+        "!add_parse_g [95000] [Arcanist] [BUDMAN008.]":
+            "/record parse member:BUDMAN008. label:Arcanist dps:95000",
+        "!update_name [BUDMAN008.] [budman008]": "/member link gamertag:BUDMAN008. user:",
+        "!update_tag [budman008] [BUDMAN009.]":
+            "/member rename gamertag:budman008 new_gamertag:BUDMAN009.",
+        "!cp Magblade": "/guide show topic:cp/magblade",
+        "!link gn vss": "/guide show topic:link/gn vss",
+        "!export": "/export",
+        "!command": "/help",
+    }
+    for old, new in cases.items():
+        got = translate(old)
+        check(f"{old.split()[0]:<22} becomes {got.command if got else '?'}",
+              got is not None and got.new == new, got.new if got else "None")
+    check("!parse points at the Scores & parses button",
+          "Scores & parses" in translate("!parse budman008").hint)
+    check("!update_name says who to pick", "budman008" in translate(
+        "!update_name [BUDMAN008.] [budman008]").hint)
+    for chatter in ("hello", "!play some song", "!!unused", "!infoo x",
+                    "<@804188183889051698> healer <@&706551971401695233>"):
+        check(f"{chatter!r} is left alone", translate(chatter) is None)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        bot = UnifyBot(Env(token="x", guild_id=0, db_path=f"{tmp}/t.sqlite3"))
+        await bot.db.connect()
+        await bot.db.seed_catalog(CATALOG)
+        for cog in COGS:
+            await bot.load_extension(cog)
+        real = {}
+        for c in bot.tree.get_commands():
+            for cmd in (c.commands if hasattr(c, "commands") else [c]):
+                name = f"/{c.name} {cmd.name}" if hasattr(c, "commands") else f"/{c.name}"
+                real[name] = {p.name for p in cmd.parameters}
+        bad = []
+        for old in cases:
+            found = translate(old)
+            options = {o.split(":", 1)[0] for o in found.options.split() if ":" in o}
+            if found.command not in real or not options <= real[found.command]:
+                bad.append(found.new)
+        check("every translation names a real command and real options", not bad, str(bad))
+        for cog in reversed(COGS):
+            await bot.unload_extension(cog)
+        await bot.db.close()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        bot = FakeBot(db)
+        bot.overrides["submissions_channel"] = 2
+        cog = OldCommands(bot)
+        officer = FakeMember(790000000000000001)
+        post = FakePost("!add_achievement [vcrgh][inkeddragonmami][healer]", officer, FakeServer([]))
+        post.channel = SimpleNamespace(id=2)
+        await cog.on_message(post)
+        said = post.replies[0].kwargs["embed"].description if post.replies else ""
+        check("the reply carries the filled-in command",
+              "/achievement give member:inkeddragonmami role:healer achievements:vcrgh" in said)
+        check("…and says nothing was changed", "Nothing was changed" in said)
+        check("…and nothing was", await db.val("SELECT COUNT(*) FROM member_achievements", (), 0) == 0
+              and await db.val("SELECT COUNT(*) FROM requests", (), 0) == 0)
+        check("the submissions reader leaves it alone",
+              not await Submissions(bot).watched(post))
+        again = FakePost("!info budman008", officer, FakeServer([]))
+        await cog.on_message(again)
+        check("one person can't make the bot spam", again.replies == [])
+        await db.close()
+
+
 async def main() -> None:
     await test_command_tree()
     await test_prerequisites()
@@ -1454,6 +1619,8 @@ async def main() -> None:
     await test_status()
     await test_settings_screen()
     await test_folded_commands()
+    await test_claim_button()
+    await test_old_commands()
     print()
     if failures:
         print(f"{len(failures)} check(s) failed: {', '.join(failures)}")

@@ -33,6 +33,7 @@ COGS = (
     "unify.cogs.helpmenu",
     "unify.cogs.reports",
     "unify.cogs.welcome",
+    "unify.cogs.oldcommands",
 )
 
 

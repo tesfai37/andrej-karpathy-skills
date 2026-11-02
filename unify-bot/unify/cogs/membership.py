@@ -45,13 +45,31 @@ class Membership(commands.Cog):
                        proof: discord.Attachment):
         await self.claim(interaction, gamertag, proof)
 
+    async def claim_blocked(self, user_id: int) -> discord.Embed | None:
+        """Why this person can't raise a claim at all, whatever gamertag they give.
+        The welcome card's button asks first, so nobody fills in a form for nothing."""
+        if not await self.bot.setting("registration"):
+            return embeds.warn("Self-registration is turned off. Ask an officer to add you.")
+        mine = await store.find_member(self.bot.db, user_id)
+        if mine is not None:
+            return embeds.warn(
+                f"This account is already **{mine.gamertag}**.\n"
+                "An officer can change that with `/member link` — it isn't "
+                "something you can do yourself.")
+        waiting = await self.bot.db.val(
+            "SELECT id FROM requests WHERE status = 'pending' AND kind = 'register' "
+            "AND requester_id = ?", (user_id,))
+        if waiting:
+            return embeds.info(self.bot.brand, f"You already have claim `#{waiting}` waiting. "
+                                               "An officer will get to it.")
+        return None
+
     async def claim(self, interaction: discord.Interaction, gamertag: str,
                     proof: discord.Attachment | None) -> None:
         """Everything /register does. The welcome card's button lands here too."""
-        if not await self.bot.setting("registration"):
-            return await interaction.response.send_message(
-                embed=embeds.warn("Self-registration is turned off. Ask an officer to add you."),
-                ephemeral=True)
+        blocked = await self.claim_blocked(interaction.user.id)
+        if blocked is not None:
+            return await interaction.response.send_message(embed=blocked, ephemeral=True)
 
         gamertag = gamertag.strip()
         if not GAMERTAG.match(gamertag):
@@ -59,23 +77,6 @@ class Membership(commands.Cog):
                 embed=embeds.error(
                     "That doesn't look like a gamertag. Letters, numbers, spaces and "
                     "`. _ ' - @` only."), ephemeral=True)
-
-        mine = await store.find_member(self.bot.db, interaction.user.id)
-        if mine is not None:
-            return await interaction.response.send_message(
-                embed=embeds.warn(
-                    f"This account is already **{mine.gamertag}**.\n"
-                    "An officer can change that with `/member link` — it isn't "
-                    "something you can do yourself."), ephemeral=True)
-
-        waiting = await self.bot.db.val(
-            "SELECT id FROM requests WHERE status = 'pending' AND kind = 'register' "
-            "AND requester_id = ?", (interaction.user.id,))
-        if waiting:
-            return await interaction.response.send_message(
-                embed=embeds.info(self.bot.brand,
-                                  f"You already have claim `#{waiting}` waiting. "
-                                  "An officer will get to it."), ephemeral=True)
 
         existing = await store.find_member(self.bot.db, gamertag)
         if existing is not None and existing.discord_id is not None:

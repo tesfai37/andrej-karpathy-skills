@@ -132,6 +132,10 @@ async def status_report(bot, guild: discord.Guild) -> discord.Embed:
         if missing:
             fix.append(f"In {channel.mention} I can't " + ", ".join(missing)
                        + ". Fix my role's permissions there.")
+    if roster and unlinked == roster:
+        fix.append("Nobody on the roster is linked to a Discord account yet, so posts that "
+                   "@mention people can't find anyone. Run `/member match` to link "
+                   "everybody from their old Discord names.")
     if not (await bot.setting("audit_channel") or await bot.setting("problems_channel")):
         fix.append("No admin log or problems channel, so `/register` and `/submit` cards "
                    "only show in `/queue` and there's no morning briefing.")
