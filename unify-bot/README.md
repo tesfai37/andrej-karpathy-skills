@@ -181,15 +181,24 @@ an officer looking:
 | `review` | nobody — everything queues |
 | `trusted` *(default)* | officers and holders of a **recorder role**, set with `/config roles key:recorder_roles` |
 
-There is no mode where a member's own post records anything. Four guards hold
+There is no mode where a member's own post records anything. These guards hold
 in **both** modes:
 
 - a poster can never record their **own** clear — that always queues
 - an unknown member queues
 - an unrecognised role queues
 - a post with no role queues
+- a post without a screenshot queues, even from a recorder
+- anyone added by **editing** a post queues
+- a run score that would be a new guild best for its trial queues
 
 Everything else lands in `/queue`, where officers approve eight at a time.
+
+**Every instant recording leaves evidence.** The bot posts its own copy of the
+screenshot to an evidence channel, and every change it made links to that copy
+in `/audit`, so nothing depends on the poster keeping their post. About one
+instant recording in twenty also comes back to an officer as a **spot check**:
+Approve if it looks right, Reject to undo everything that post recorded.
 
 **Nothing is ever dropped silently.** If the bot doesn't recognise something it
 says so in the channel:
@@ -242,6 +251,12 @@ every saved name up against your server and links the exact, unambiguous matches
 in one confirmed batch. Looking people up by their old Discord name works
 straight away either way.
 
+Before matching, fold together any records that are one person twice — usually
+the same gamertag with and without the trailing dot — with **`/member merge`**.
+It shows what will move, keeps every clear and the better scores, and `/undo`
+reverses it exactly. The officer guide has the full switching-over checklist,
+starting with turning the old bot off.
+
 ### The `L` marker — legacy records
 
 About 25,000 cells in the old sheet say `L` instead of `X`. **`L` means the
@@ -282,8 +297,8 @@ column, a `DiscordName` column, and `X` in an achievement column. `Score` and
 `Parse` sheets are picked up too — `112k`, `98,400` and `1.2m` all parse
 correctly.
 
-> A bulk import is **not** covered by `/undo`. Take an `/export` first if you
-> want a restore point.
+> A bulk import is **not** covered by `/undo`, so the bot saves a full backup of
+> the database right before every import. If it can't, the import doesn't run.
 
 ### Backups
 
@@ -303,6 +318,11 @@ One thing changes on a re-import, by design: if a record ticks a hard mode
 without the bosses it needs, the import fills those in. Your current file has
 506 of them.
 
+**The bot also backs itself up**, every day and right before every import, into
+`data/backups` next to the database. It keeps the newest 14 daily and 10
+pre-import copies, and `/status` says when the last one was made. To restore:
+stop the bot, copy a backup over `data/unify.sqlite3`, start it again.
+
 ---
 
 ## Part 5 — Everyday use
@@ -312,7 +332,7 @@ without the bosses it needs, the import fills those in. Your current file has
 | Command | What it does |
 | --- | --- |
 | `/me` | Your own achievement card, and anything of yours waiting on an officer |
-| `/profile` | Look somebody up by gamertag or Discord name; **Scores & parses** is a button on the card |
+| `/profile` | Look somebody up by gamertag or Discord name; **Scores & parses** and **Report a mistake** are buttons on the card |
 | `/find` | Who has (and hasn't) cleared what — the group-building question |
 | `/guide show` | CP builds, channel links, setups — leave the topic blank for everything |
 | `/leaderboard` | Points, achievements, scores or parses |
@@ -325,13 +345,17 @@ The profile card opens on a summary: a progress bar per trial you've actually
 touched, everything untouched collapsed into one line, and your titles. Two
 menus underneath switch role or open a single trial for the boss-by-boss list.
 
+Members only see these commands in their `/` menu. Officer commands are hidden
+from anyone without Manage Server; the officer guide says how to show them to an
+officer role.
+
 ### For officers
 
 | Command | What it does |
 | --- | --- |
 | `/status` | The whole setup in plain English, and anything broken |
 | `/queue` | Everything waiting on an officer, approved in batches |
-| `/member add` · `link` · `rename` · `remove` | Roster |
+| `/member add` · `link` · `rename` · `merge` · `remove` | Roster; `merge` folds a duplicate record into the one to keep |
 | `/achievement give` · `take` | Grant or remove — prerequisites handled |
 | `/record score` · `/record parse` | Numbers |
 | `/trial add` · `/achievement new` · `/achievement rename` | New content, no code |
@@ -471,6 +495,7 @@ they're for.
 | `recorder_roles` | May record for others, never for themselves |
 | `registration` · `member_submissions` | What members may *request* (never write) |
 | `activity_channel` · `problems_channel` | Digest log, and the log that needs a human |
+| `evidence_channel` | The bot's copies of the screenshots behind instant recordings (empty = the admin log) |
 | `digest_minutes` · `briefing_hour` · `audit_days` | Digest cadence, morning briefing, retention |
 | `report_day`, `report_hour` | Weekly report schedule (UTC, `off` to disable) |
 
@@ -485,6 +510,8 @@ Start with `/status` — it names most of these for you.
 | Slash commands don't appear | Check `GUILD_ID` in `.env`, then restart the bot. Without it commands take up to an hour to show up. |
 | The bot ignores the submissions channel | `/status` — is `submissions_channel` set, and can the bot see and reply there? Is **Message Content Intent** on in the developer portal? |
 | Every post says *"Not on the roster"* | Nobody is linked yet. Run `/member match`. |
+| A raid lead's post waited anyway | The card says why: no screenshot, an edited post, their own line, or a new guild best. |
+| A claim says it *matches 2 roster entries* | `/member merge` the two records, then approve the claim. |
 | "I don't know what @X means yet" | `/map role` on that role, or press the button in the message. |
 | "I couldn't tell who this is for" | `/member add` them, or `/member link` their gamertag to their Discord account. |
 | Wrong data got in | `/undo`. For something older, `/audit` to find the number, then `/undo 42`. |
