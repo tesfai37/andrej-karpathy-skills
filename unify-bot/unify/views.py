@@ -161,6 +161,7 @@ class ProfileView(OwnedView):
         if self.numbers:
             self.clear_items()
             self.add_item(BackButton())
+            self.add_item(ReportButton())
             return embeds.numbers_embed(
                 self.bot.brand, self.member.gamertag,
                 await db.all(
@@ -178,11 +179,13 @@ class ProfileView(OwnedView):
             trial = dict(await db.one("SELECT * FROM trials WHERE key = ?", (self.trial_key,)))
             detail = await store.trial_detail(db, self.member.id, self.role, self.trial_key)
             self.add_item(BackButton())
+            self.add_item(ReportButton())
             return embeds.trial_embed(
                 self.bot.brand, self.member.gamertag, self.role, trial, detail,
                 await self.bot.setting("mark_label"))
 
         self.add_item(NumbersButton())
+        self.add_item(ReportButton())
         return embeds.profile_embed(
             self.bot.brand,
             self.member.gamertag,
@@ -222,6 +225,24 @@ class NumbersButton(discord.ui.Button):
         view: ProfileView = self.view
         view.numbers = True
         await view.refresh(interaction)
+
+
+class ReportButton(discord.ui.Button):
+    """Members can't change a record, but they can flag one they know is wrong."""
+
+    def __init__(self):
+        super().__init__(label="Report a mistake", emoji="🚩",
+                         style=discord.ButtonStyle.secondary, row=2)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: ProfileView = self.view
+        if view.numbers:
+            looking_at = "Scores & parses"
+        else:
+            looking_at = ROLE_LABEL.get(view.role, view.role) + (
+                f" · {view.trial_key}" if view.trial_key else "")
+        await interaction.client.get_cog("Profiles").start_report(
+            interaction, view.member, looking_at)
 
 
 class ActionButton(discord.ui.Button):

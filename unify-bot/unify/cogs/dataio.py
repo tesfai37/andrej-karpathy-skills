@@ -4,6 +4,7 @@ from __future__ import annotations
 import collections
 import csv
 import io
+import sqlite3
 import zipfile
 from datetime import datetime, timezone
 
@@ -229,7 +230,7 @@ class DataIO(commands.Cog):
             name="​",
             value="People who aren't on the roster yet will be added, and existing records "
                   "are updated rather than wiped. A bulk import is **not** covered by "
-                  "`/undo` — take an `/export` first if you want a restore point.",
+                  "`/undo`, so I save a full backup of the database right before it starts.",
             inline=False)
         view = views.Confirm(interaction.user.id, "Import", discord.ButtonStyle.success)
         message = await interaction.followup.send(embed=e, view=view, wait=True)
@@ -239,10 +240,19 @@ class DataIO(commands.Cog):
             return await message.edit(embed=embeds.warn("Cancelled — nothing was imported."),
                                       view=None)
 
-        await message.edit(embed=embeds.info(self.bot.brand, "Importing…"), view=None)
+        await message.edit(embed=embeds.info(self.bot.brand, "Saving a backup first…"), view=None)
+        try:
+            saved = await self.bot.db.backup("before-import", keep=10)
+        except (sqlite3.Error, OSError) as exc:
+            return await message.edit(embed=embeds.error(
+                f"I couldn't save a backup first ({exc}), so nothing was imported. "
+                "Check there's disk space next to the database."))
+        await message.edit(embed=embeds.info(self.bot.brand, "Importing…"))
         report = await self.apply(sheets, usable, interaction.user)
         await self.bot.audit(interaction.user, "import", f"{file.filename} — {report}")
-        await message.edit(embed=embeds.success(f"Imported **{file.filename}**\n{report}"))
+        await message.edit(embed=embeds.success(
+            f"Imported **{file.filename}**\n{report}\n\nThe backup from just before is "
+            f"`data/backups/{saved.name}`."))
 
     async def apply(self, sheets, plans: list[importer.SheetPlan], actor) -> str:
         """Bulk path: the catalog is read once and rows are written straight in,

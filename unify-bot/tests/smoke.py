@@ -66,6 +66,19 @@ async def test_command_tree() -> None:
               str(hidden - listed - {"/help"}))
         for gone in ("score", "parse", "whoami"):
             check(f"/{gone} has been folded away", gone not in names)
+
+        bot.hide_officer_commands()
+        hidden_from_members = sorted(c.name for c in bot.tree.get_commands()
+                                     if c.default_permissions is not None
+                                     and c.default_permissions.manage_guild)
+        shown = sorted(set(names) - set(hidden_from_members))
+        check("officer commands are hidden from members' menus",
+              set(hidden_from_members) >= {"achievement", "audit", "config", "export", "import",
+                                           "map", "member", "queue", "record", "setup", "status",
+                                           "sync", "trial", "undo"}, ", ".join(hidden_from_members))
+        check("…and members still see everything they can use",
+              shown == ["find", "guide", "help", "leaderboard", "me", "profile", "register",
+                        "roster", "stats", "submit"], ", ".join(shown))
         check("/guide list has been folded away", "/guide list" not in subs)
         for expected in ("/map auto", "/member add", "/achievement give", "/record score",
                          "/config show", "/trial add",
@@ -983,6 +996,18 @@ class FakeChannel:
         return sent
 
 
+class FakeEditable:
+    """A message the bot sent and may edit later; edits land in the interaction."""
+
+    def __init__(self, interaction):
+        self.interaction = interaction
+
+    async def edit(self, **kwargs):
+        if kwargs.get("embed") is not None:
+            self.interaction.said.append(kwargs["embed"])
+        self.interaction.sent.append(kwargs)
+
+
 class FakeInteraction:
     """Records what a command said back, whether straight away or after deferring."""
 
@@ -994,6 +1019,7 @@ class FakeInteraction:
         async def send_message(**kwargs):
             self.said.append(kwargs["embed"])
             self.sent.append(kwargs)
+            return FakeEditable(self)
 
         async def defer(**kwargs):
             self.deferred = True
@@ -1412,7 +1438,7 @@ async def test_folded_commands() -> None:
         text = "\n".join(f.name + f.value for f in page.fields)
         check("…which shows what /score and /parse did",
               "251,000" in text and "118,000" in text and "Arcanist" in text, text)
-        check("…with a way back", [i.label for i in card.children] == ["Back to overview"])
+        check("…with a way back", [i.label for i in card.children][0] == "Back to overview")
 
         cog = Profiles(bot)
         stranger = FakeMember(770000000000000002)
@@ -1859,7 +1885,262 @@ async def test_recorder_safeguards() -> None:
         await db.close()
 
 
+async def test_reports() -> None:
+    """Members can't change a record, but they can flag one they know is wrong."""
+    print("\nreporting a mistake")
+    from unify import views
+    from unify.cogs.profiles import MAX_OPEN_REPORTS, Profiles, ReportModal
+    from unify.cogs.reviewqueue import approve_one
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        bot = FakeBot(db)
+        bot.channel = FakeChannel()
+        cog = Profiles(bot)
+        bot.cogs["Profiles"] = cog
+        target = await store.create_member(db, "FLAGGED.", None)
+        await store.grant(db, target, "dps", ["vss"], 1, "t")
+        reporter = FakeMember(794000000000000001)
+
+        card = views.ProfileView(bot, reporter.id, target)
+        pages = []
+        await card.build()
+        pages.append([getattr(i, "label", None) for i in card.children])
+        card.trial_key = "vss"
+        await card.build()
+        pages.append([getattr(i, "label", None) for i in card.children])
+        card.trial_key, card.numbers = None, True
+        await card.build()
+        pages.append([getattr(i, "label", None) for i in card.children])
+        check("every page of a profile card has Report a mistake",
+              all("Report a mistake" in labels for labels in pages), str(pages))
+
+        tapped = FakeInteraction(reporter, bot)
+        button = next(i for i in card.children if getattr(i, "label", "") == "Report a mistake")
+        await button.callback(tapped)
+        check("tapping it opens a short form", isinstance(tapped.sent[0].get("modal"), ReportModal))
+
+        before = await db.val("SELECT COUNT(*) FROM member_achievements", (), 0)
+        sent = FakeInteraction(reporter, bot)
+        await cog.file_report(sent, target, "DPS · vss", "  They weren't in that run.  ")
+        row = await db.one("SELECT * FROM requests WHERE kind = 'report'")
+        check("sending it raises a report for the officers",
+              row is not None and json.loads(row["payload"])["text"] == "They weren't in that run."
+              and "file" not in bot.channel.sent[-1].kwargs and bot.channel.sent[-1].kwargs["embed"])
+        check("…and changes nothing on the record",
+              await db.val("SELECT COUNT(*) FROM member_achievements", (), 0) == before)
+
+        again = FakeInteraction(reporter, bot)
+        await cog.start_report(again, target, "DPS")
+        check("the same person can't report the same record twice",
+              "already reported" in again.said[0].description and not any("modal" in c for c in again.sent))
+
+        for i in range(MAX_OPEN_REPORTS - 1):
+            other = await store.create_member(db, f"OTHER{i}.", None)
+            await cog.file_report(FakeInteraction(reporter, bot), other, "DPS", "wrong")
+        extra = await store.create_member(db, "ONE MORE.", None)
+        flood = FakeInteraction(reporter, bot)
+        await cog.start_report(flood, extra, "DPS")
+        check(f"nobody can have more than {MAX_OPEN_REPORTS} reports waiting",
+              "reports waiting already" in flood.said[0].description)
+
+        result = await approve_one(bot, row, FakeMember(1, admin=True), FakeServer([]))
+        check("an officer marks it dealt with, and that changes nothing either",
+              result.ok and await db.val("SELECT COUNT(*) FROM member_achievements", (), 0) == before)
+        await db.close()
+
+
+async def test_merge() -> None:
+    """Two records for one person, with clears on both sides, folded into one, and
+    /undo putting every row back exactly."""
+    print("\nmerging duplicate records")
+    from unify import views
+    from unify.cogs.admin import Admin
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        bot = FakeBot(db)
+        await db.run("INSERT INTO members(gamertag, legacy_name) VALUES('S superballs B.', 'amb#0149')")
+        await db.run("INSERT INTO members(gamertag, legacy_name, discord_id) "
+                     "VALUES('S superballs B', 'amb#0149', 795000000000000001)")
+        keep = await store.find_member(db, "S superballs B.")
+        dup = await store.find_member(db, "S superballs B")
+        rows = [(keep.id, "dps", "vss", "X"), (keep.id, "dps", "vssice", "L"),
+                (keep.id, "tank", "vka", "X"), (dup.id, "dps", "vss", "X"),
+                (dup.id, "dps", "vssice", "X"), (dup.id, "healer", "vcr", "X")]
+        await db.run_many([("INSERT INTO member_achievements(member_id, role, achievement_key, mark, "
+                            "granted_at) VALUES(?,?,?,?, '2021-05-01 10:00:00')", r) for r in rows])
+        await db.run_many([
+            ("INSERT INTO scores(member_id, trial_key, score) VALUES(?,?,?)", (keep.id, "vss", 200000)),
+            ("INSERT INTO scores(member_id, trial_key, score) VALUES(?,?,?)", (keep.id, "vka", 100000)),
+            ("INSERT INTO scores(member_id, trial_key, score) VALUES(?,?,?)", (dup.id, "vss", 150000)),
+            ("INSERT INTO scores(member_id, trial_key, score) VALUES(?,?,?)", (dup.id, "vcr", 90000)),
+            ("INSERT INTO parses(member_id, label, dps) VALUES(?,?,?)", (keep.id, "Arcanist", 100000)),
+            ("INSERT INTO parses(member_id, label, dps) VALUES(?,?,?)", (dup.id, "Arcanist", 120000)),
+            ("INSERT INTO parses(member_id, label, dps) VALUES(?,?,?)", (dup.id, "Necro", 80000)),
+        ])
+        old_request = await reviews.open_request(db, "score", requester_id=5, member_id=dup.id,
+                                                 payload={"trial": "vss", "score": 1})
+        await reviews.close(db, old_request, "approved", 1)
+
+        async def snapshot():
+            out = {}
+            for table, order in (("members", "id"), ("member_achievements", "member_id, role, achievement_key"),
+                                 ("scores", "member_id, trial_key"), ("parses", "member_id, label"),
+                                 ("requests", "id")):
+                out[table] = [tuple(r) for r in await db.all(f"SELECT * FROM {table} ORDER BY {order}")]
+            return out
+
+        before = await snapshot()
+        plan = await store.plan_merge(db, dup, keep)
+        check("the preview counts what would move",
+              (plan.clears, plan.already, plan.upgraded, plan.scores, plan.parses, plan.link)
+              == (1, 1, 1, 1, 2, True),
+              str((plan.clears, plan.already, plan.upgraded, plan.scores, plan.parses, plan.link)))
+        entry = await store.apply_merge(db, plan, 1, "officer")
+        merged = await store.find_member(db, "S superballs B.")
+        marks = {(r[0], r[1]): r[2] for r in await db.all(
+            "SELECT role, achievement_key, mark FROM member_achievements WHERE member_id = ?", (keep.id,))}
+        scores = {r[0]: r[1] for r in await db.all("SELECT trial_key, score FROM scores WHERE member_id = ?", (keep.id,))}
+        parses = {r[0]: r[1] for r in await db.all("SELECT label, dps FROM parses WHERE member_id = ?", (keep.id,))}
+        check("the duplicate is gone", await store.get_member(db, dup.id) is None)
+        check("every clear ends up on the kept record",
+              set(marks) == {("dps", "vss"), ("dps", "vssice"), ("tank", "vka"), ("healer", "vcr")})
+        check("…and a regular clear beats a legacy mark", marks[("dps", "vssice")] == "X")
+        check("the better score per trial is kept",
+              scores == {"vss": 200000, "vka": 100000, "vcr": 90000}, str(scores))
+        check("the better parse per label is kept",
+              parses == {"Arcanist": 120000, "Necro": 80000}, str(parses))
+        check("the Discord link moves over", merged.discord_id == 795000000000000001)
+        check("old requests follow the person",
+              (await reviews.get(db, old_request))["member_id"] == keep.id)
+        check("a claim on the name now finds one record",
+              [m.id for m in await store.same_gamertag(db, "S superballs B")] == [keep.id])
+
+        await store.undo_action(db, entry)
+        check("/undo puts every row back exactly as it was", await snapshot() == before)
+
+        await db.run("UPDATE members SET discord_id = 795000000000000002 WHERE id = ?", (keep.id,))
+        two = await store.plan_merge(db, await store.get_member(db, dup.id), await store.get_member(db, keep.id))
+        check("two records linked to different accounts are never merged", "two different" in two.problem)
+        await db.run("UPDATE members SET discord_id = NULL WHERE id = ?", (keep.id,))
+
+        waiting = await reviews.open_request(db, "run", requester_id=5,
+                                             payload={"keys": ["vss"], "members": [[dup.id, "dps"]]})
+        officer = FakeInteraction(FakeMember(1, admin=True), bot)
+        cog = Admin(bot)
+        await cog.member_merge.callback(cog, officer, "S superballs B", "S superballs B.")
+        check("a record still in a waiting request isn't merged",
+              f"#{waiting}" in officer.said[0].description
+              and await store.get_member(db, dup.id) is not None)
+        await reviews.close(db, waiting, "rejected", 1)
+
+        class Yes:
+            def __init__(self, *a, **k):
+                self.result = True
+
+            async def wait(self):
+                return None
+
+        officer = FakeInteraction(FakeMember(1, admin=True), bot)
+        real_confirm, views.Confirm = views.Confirm, Yes
+        try:
+            await cog.member_merge.callback(cog, officer, "S superballs B", "S superballs B.")
+        finally:
+            views.Confirm = real_confirm
+        preview = officer.said[0].description
+        check("the command shows what will happen before it happens",
+              "**1** clear moves over" in preview and "becomes a regular clear" in preview
+              and "deleted" in preview, preview)
+        check("…and then does it", await store.get_member(db, dup.id) is None
+              and "Merged" in officer.sent[-1]["embed"].description)
+        await db.close()
+
+
+async def test_backups() -> None:
+    """/import can't be undone, so the bot keeps its own copies of the database."""
+    print("\nautomatic backups")
+    import sqlite3
+    from unify import views
+    from unify.cogs.dataio import DataIO
+    from unify.cogs.logs import Logs
+    from unify.cogs.settings import status_report
+    from types import SimpleNamespace
+    with tempfile.TemporaryDirectory() as tmp:
+        db = await fresh_db(f"{tmp}/t.sqlite3")
+        bot = FakeBot(db)
+        await store.create_member(db, "BACKED UP.", None)
+
+        first = await db.backup("daily", keep=2)
+        copy = sqlite3.connect(first)
+        check("a backup is a complete copy that opens on its own",
+              copy.execute("SELECT gamertag FROM members").fetchall() == [("BACKED UP.",)])
+        copy.close()
+        for _ in range(3):
+            await db.backup("daily", keep=2)
+        check("only the newest copies are kept", len(list(db.backup_folder.glob("daily-*"))) == 2)
+
+        logs = Logs(bot)
+        await db.run("DELETE FROM settings WHERE key = '_last_backup'")
+        before = len(list(db.backup_folder.glob("daily-*")))
+        await logs.maybe_backup()
+        await logs.maybe_backup()
+        check("the daily backup runs once a day",
+              len(list(db.backup_folder.glob("daily-*"))) == min(before + 1, 14))
+
+        guild = SimpleNamespace(id=1, me=SimpleNamespace(guild_permissions=discord.Permissions.all()))
+        bot.get_channel = lambda cid: None
+        report = await status_report(bot, guild)
+        check("/status says when the last backup was",
+              "Last backup" in next(f.value for f in report.fields if f.name == "Right now"))
+
+        class Workbook:
+            filename = "roster.xlsx"
+
+            async def read(self):
+                return make_workbook()
+
+        class Yes:
+            def __init__(self, *a, **k):
+                self.result, self.message = True, None
+
+            async def wait(self):
+                return None
+
+        cog = DataIO(bot)
+        members_before = await db.val("SELECT COUNT(*) FROM members", (), 0)
+        officer = FakeInteraction(FakeMember(1, admin=True), bot)
+        real_confirm, views.Confirm = views.Confirm, Yes
+        try:
+            await cog.import_cmd.callback(cog, officer, Workbook(), None)
+            saved = sorted(db.backup_folder.glob("before-import-*"))
+            check("an import saves a backup before it changes anything",
+                  len(saved) == 1 and sqlite3.connect(saved[0]).execute(
+                      "SELECT COUNT(*) FROM members").fetchone()[0] == members_before)
+            check("…and the import still happens, and says where the backup is",
+                  await db.val("SELECT COUNT(*) FROM members", (), 0) > members_before
+                  and saved[0].name in officer.said[-1].description)
+
+            async def broken(*a, **k):
+                raise OSError("disk full")
+
+            real_backup, db.backup = db.backup, broken
+            members_now = await db.val("SELECT COUNT(*) FROM members", (), 0)
+            await db.run("DELETE FROM members WHERE gamertag = 'ALICE'")
+            refused = FakeInteraction(FakeMember(1, admin=True), bot)
+            await cog.import_cmd.callback(cog, refused, Workbook(), None)
+            db.backup = real_backup
+            check("if the backup fails, nothing is imported",
+                  "nothing was imported" in refused.said[-1].description
+                  and await db.val("SELECT COUNT(*) FROM members", (), 0) == members_now - 1)
+        finally:
+            views.Confirm = real_confirm
+        await db.close()
+
+
 async def main() -> None:
+    # Spot checks pick instant recordings at random. Off here so every test is
+    # repeatable; the spot check test turns them on for itself.
+    import unify.cogs.submissions
+    unify.cogs.submissions.SPOT_CHECK_RATE = 0
     await test_command_tree()
     await test_prerequisites()
     await test_message_parsing()
@@ -1895,6 +2176,9 @@ async def main() -> None:
     await test_dot_claims()
     await test_rejoining()
     await test_recorder_safeguards()
+    await test_reports()
+    await test_merge()
+    await test_backups()
     print()
     if failures:
         print(f"{len(failures)} check(s) failed: {', '.join(failures)}")

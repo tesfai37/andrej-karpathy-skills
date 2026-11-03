@@ -68,6 +68,7 @@ def admin_only():
             "This one is for admins. Ask an officer, or have them add your role with "
             "`/config set key:admin_roles`."
         )
+    predicate.officer_only = True       # lets the bot hide these from members' menus
     return app_commands.check(predicate)
 
 

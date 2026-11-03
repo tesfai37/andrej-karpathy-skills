@@ -1,6 +1,7 @@
 .env
 data/*.sqlite3
 data/*.sqlite3-*
+data/backups/
 __pycache__/
 *.pyc
 exports/

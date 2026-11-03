@@ -11,6 +11,7 @@ Plus a morning briefing, which is the one thing an officer should have to read."
 from __future__ import annotations
 
 import logging
+import sqlite3
 from datetime import datetime, timezone
 
 import discord
@@ -99,6 +100,7 @@ class Logs(commands.Cog):
             await self.flush_activity()
             await self.maybe_brief()
             await self.maybe_prune()
+            await self.maybe_backup()
         except Exception:
             log.exception("log housekeeping failed")
 
@@ -206,6 +208,19 @@ class Logs(commands.Cog):
                         inline=False)
         e.set_footer(text=f"{self.bot.brand.name} • posted once a day")
         return e
+
+    # ------------------------------------------------------------------ backups
+    async def maybe_backup(self) -> None:
+        """A full copy of the database every day, the last two weeks of them kept."""
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if await self.bot.db.get_setting("_last_backup") == stamp:
+            return
+        await self.bot.db.set_setting("_last_backup", stamp)
+        try:
+            await self.bot.db.backup("daily", keep=14)
+        except (sqlite3.Error, OSError) as exc:
+            await self.bot.problem("The daily backup failed",
+                                   f"{exc}. Check there's disk space next to the database.")
 
     # ------------------------------------------------------------------ retention
     async def maybe_prune(self) -> None:

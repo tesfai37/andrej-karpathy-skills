@@ -5,7 +5,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from .. import autocomplete, embeds, store, views
+from .. import autocomplete, embeds, reviews, store, views
 from ..store import strip_discriminator
 from ..checks import admin_only
 from ..config import ROLES, ROLE_LABEL
@@ -183,6 +183,74 @@ class Admin(commands.Cog):
                              f"{member.gamertag} -> {new_gamertag}", entry)
         await interaction.response.send_message(
             embed=embeds.success(f"**{member.gamertag}** is now **{new_gamertag}**."))
+
+    @member_group.command(name="merge", description="Fold a duplicate record into the one to keep")
+    @app_commands.describe(duplicate="The record to fold in, which is then deleted",
+                           keep="The record that stays")
+    @app_commands.autocomplete(duplicate=autocomplete.members, keep=autocomplete.members)
+    @admin_only()
+    async def member_merge(self, interaction: discord.Interaction, duplicate: str, keep: str):
+        dup = await need_member(interaction, duplicate)
+        if dup is None:
+            return
+        kept = await need_member(interaction, keep)
+        if kept is None:
+            return
+        problem = await self.merge_problem(dup, kept)
+        if problem:
+            return await interaction.response.send_message(embed=embeds.error(problem),
+                                                           ephemeral=True)
+        plan = await store.plan_merge(self.bot.db, dup, kept)
+        lines = [f"• **{plan.clears}** clear{'s move' if plan.clears != 1 else ' moves'} over"
+                 + (f", {plan.already} {'is' if plan.already == 1 else 'are'} already on "
+                    f"**{kept.gamertag}**" if plan.already else "")]
+        if plan.upgraded:
+            lines.append(f"• **{plan.upgraded}** legacy mark{'s' if plan.upgraded != 1 else ''} "
+                         f"on **{kept.gamertag}** {'become' if plan.upgraded != 1 else 'becomes a'} "
+                         f"regular clear{'s' if plan.upgraded != 1 else ''}")
+        if plan.scores or plan.parses:
+            lines.append(f"• **{plan.scores}** better score{'s' if plan.scores != 1 else ''} "
+                         f"and **{plan.parses}** better parse{'s' if plan.parses != 1 else ''}")
+        if plan.link:
+            lines.append(f"• the Discord link to <@{dup.discord_id}> moves over")
+        view = views.Confirm(interaction.user.id, "Merge")
+        await interaction.response.send_message(
+            embed=embeds.warn(f"Merge **{dup.gamertag}** into **{kept.gamertag}**?\n"
+                              + "\n".join(lines)
+                              + f"\n\nThen **{dup.gamertag}** is deleted. `/undo` puts "
+                                "everything back."),
+            view=view, ephemeral=True)
+        await view.wait()
+        if not view.result:
+            return await interaction.edit_original_response(
+                embed=embeds.info(self.bot.brand, "Cancelled."), view=None)
+
+        # Things may have moved while the preview was open, so it's worked out again.
+        dup, kept = (await store.get_member(self.bot.db, dup.id),
+                     await store.get_member(self.bot.db, kept.id))
+        problem = (await self.merge_problem(dup, kept) if dup and kept
+                   else "one of those records is gone now")
+        if problem:
+            return await interaction.edit_original_response(embed=embeds.error(problem),
+                                                            view=None)
+        plan = await store.plan_merge(self.bot.db, dup, kept)
+        entry = await store.apply_merge(self.bot.db, plan, interaction.user.id,
+                                        str(interaction.user))
+        await self.bot.sync_roles(interaction.guild, await store.get_member(self.bot.db, kept.id),
+                                  "records merged")
+        await self.bot.audit(interaction.user, "members merged",
+                             f"{dup.gamertag} into {kept.gamertag}", entry)
+        await interaction.edit_original_response(
+            embed=embeds.success(f"Merged **{dup.gamertag}** into **{kept.gamertag}**. "
+                                 f"`/undo {entry}` reverses it."), view=None)
+
+    async def merge_problem(self, dup: store.Member, kept: store.Member) -> str:
+        waiting = await reviews.pending_about(self.bot.db, dup.id)
+        if waiting:
+            return (f"**{dup.gamertag}** is in {'a request' if len(waiting) == 1 else 'requests'} "
+                    f"still waiting: {', '.join(f'#{i}' for i in waiting)}. Approve or reject "
+                    "them first, then merge.")
+        return (await store.plan_merge(self.bot.db, dup, kept)).problem
 
     @member_group.command(name="remove", description="Take somebody off the roster")
     @app_commands.autocomplete(gamertag=autocomplete.members)

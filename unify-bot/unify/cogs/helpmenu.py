@@ -44,6 +44,7 @@ SECTIONS: list[tuple[str, str, bool, list[tuple[str, str]]]] = [
         ("/member link", "Connect a gamertag to a Discord account"),
         ("/member match", "Link everybody at once from the old Discord names"),
         ("/member rename", "Change a gamertag"),
+        ("/member merge", "Fold a duplicate record into the one to keep"),
         ("/member remove", "Take somebody off the roster"),
     ]),
     ("Admin · achievements", "🏅", True, [

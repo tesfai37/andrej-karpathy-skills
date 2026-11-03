@@ -1,6 +1,8 @@
 """One screen of setup, plus /config for the details."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -118,10 +120,15 @@ async def status_report(bot, guild: discord.Guild) -> discord.Embed:
     mapped = await db.val(
         "SELECT COUNT(*) FROM achievements WHERE key IN "
         "(SELECT value FROM role_map WHERE kind = 'achievement')", (), 0)
+    copies = sorted(bot.db.backup_folder.glob("*.sqlite3"), key=lambda f: f.stat().st_mtime)
+    newest = (datetime.fromtimestamp(copies[-1].stat().st_mtime, timezone.utc)
+              .strftime("%Y-%m-%d %H:%M") if copies else "")
     e.add_field(name="Right now", value="\n".join([
         f"📥 **{waiting}** waiting in `/queue`",
         f"👥 **{roster}** on the roster, **{unlinked}** not linked to a Discord account",
         f"🔗 **{mapped}** of **{achievements}** achievements have a Discord role",
+        f"💾 Last backup **{newest} UTC**, {len(copies)} kept in `data/backups`" if copies
+        else "💾 No backup yet. One is saved every day, and before every import.",
     ]), inline=False)
 
     channel_id = await bot.setting("submissions_channel")

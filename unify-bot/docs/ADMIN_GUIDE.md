@@ -5,6 +5,25 @@ except the one-time install.
 
 ---
 
+## Switching over from the old bot
+
+Do this once, in this order:
+
+1. **Turn the old bot off.** From here on, anything typed into it is lost: the
+   new bot only *translates* the old `!` commands, it never runs them.
+2. **Take the newest copy of the old `database.db`.** If you have more than one
+   copy, make sure it's the most recent, or the clears since then are missing.
+3. **Migrate it and check it** (section 4).
+4. **Start the new bot**, run `/setup` and `/map auto` (sections 2 and 3).
+5. **Merge duplicate records** with `/member merge`, and take junk rows off with
+   `/member remove` (section 5, *The roster*).
+6. **Run `/member match`** so posts can find people (section 4).
+7. **Run `/status`** and fix anything it lists.
+8. **Tell your members**: post the way you always have, attach the screenshot,
+   and tap **Claim my gamertag** on the welcome card if you aren't linked.
+
+---
+
 ## 1. Install (once, by one person)
 
 ### The bot account
@@ -72,6 +91,13 @@ channel, a channel that was deleted, a permission the bot is missing, @everyone
 picked as an officer or recorder role, or a roster nobody is linked to yet.
 Run it again whenever something seems off.
 
+**Members don't see officer commands.** Discord hides them from anyone without
+**Manage Server**, so a member's `/` menu only lists what they can use. If an
+officer gets their access only from an officer role, the server owner shows the
+commands to that role once: Server Settings, then Integrations, then Unify, and
+allow the role. The bot still checks every use either way. `/guide` stays
+visible to everyone, because members use `/guide show`.
+
 ---
 
 ## 3. Teach it your roles
@@ -133,6 +159,10 @@ matches, shows you a preview, and skips any account two roster entries both clai
 `/undo` reverses the whole batch. Anyone it can't match can claim their gamertag
 themselves, or you link them with `/member link`.
 
+**Merge duplicates first.** Two records that differ only by a trailing dot, like
+`a hos3r eh` and `a hos3r eh.`, are one person, and match skips a Discord name
+that two records both claim. `/member merge` folds one into the other first.
+
 Looking people up works by Discord name straight away, linked or not: typing
 `budman008` into `/profile` or any officer command finds BUDMAN008. from the
 saved name.
@@ -146,7 +176,9 @@ saved name.
 It tells you what it found before doing anything — which sheet maps to which role,
 how many achievement columns, what it will ignore — and waits for **Import**.
 
-A bulk import is **not** covered by `/undo`. Take an `/export` first.
+A bulk import is **not** covered by `/undo`, so the bot saves a full backup of
+the database right before every import starts (section 9). If it can't save the
+backup, it doesn't import.
 
 ---
 
@@ -180,6 +212,17 @@ the card says *No clear role — pick one below* and shows a Tank / Healer / DPS
 menu. Approve refuses until a role is picked. In `/queue` the same menu sets
 the role for everything you've selected.
 
+Two more sorts of card land in your admin log channel:
+
+- **🔍 Spot check.** About one recording in twenty that went in straight away
+  comes back to you afterwards, with its screenshot. **Approve** if it looks
+  right. **Reject** undoes everything that post recorded, scores included.
+  The bot doesn't tell the recorder.
+- **🚩 Record report.** A member tapped **Report a mistake** on someone's
+  profile and said what's wrong. **Approve** once you've dealt with it,
+  **Reject** if nothing's wrong; neither changes the record by itself. A member
+  can have three reports waiting at most, and nobody is told they were reported.
+
 ### Who is allowed to record
 
 `submission_mode` has two settings:
@@ -200,9 +243,23 @@ fact instead of gating everything beforehand. The Monday briefing is that audit.
 post goes to the queue while everyone else in the run is recorded. That hole
 would otherwise be the easiest one to walk through.
 
-**Scores work the same way.** A recorder's run score goes on everyone in the run
-at once, unless the recorder was in the run, in which case it waits for you. A
-score is only ever raised: anyone who already has a better one keeps it.
+**A recorder's post records straight away only when all of this is true:**
+
+| Check | Otherwise |
+| --- | --- |
+| It has a screenshot attached | It waits: *no screenshot attached* |
+| It hasn't been edited | Anyone an edit adds waits: *added by an edit* |
+| The person isn't the poster | Their own line waits; everyone else is recorded |
+| Its score isn't a new guild best for that trial | The score waits: *a new guild best* |
+
+The reason is on the card. A score is only ever raised: anyone who already has a
+better one keeps it.
+
+**Every instant recording leaves evidence.** The bot posts its own copy of the
+screenshot to `evidence_channel`, or the admin log if that isn't set, and every
+change it made links to that copy: look for 📎 in `/audit`. The copy survives
+the poster editing or deleting their post. If there's nowhere to keep it,
+nothing records straight away. Changes you approve link to their card instead.
 
 ### What members can and cannot do
 
@@ -264,11 +321,29 @@ One answer per person every 20 seconds, so nobody can use it to make the bot spa
 /member add     gamertag: NewGuy.  user: @newguy
 /member link    gamertag: NewGuy.  user: @newguy
 /member rename  gamertag: OldName.  new_gamertag: NewName.
+/member merge   duplicate: NewGuy  keep: NewGuy.   ← two records, one person
 /member remove  gamertag: Leaver.        ← keeps their record, hides them from lists
 ```
 
 The bot never renames one member to make room for another. If a gamertag and a
 Discord account disagree it says so and changes nothing.
+
+**A trailing dot doesn't make a new person.** Most gamertags on the roster end
+in a dot and members type theirs without it, so `/member add`, `/import` and
+roster claims all treat `BUDMAN008` as `BUDMAN008.`. A claim names the record the
+way the roster spells it and shows what it would inherit. If two records differ
+only by the dot, the claim can't be approved until you merge them.
+
+**`/member merge`** folds the duplicate into the record you keep: every clear
+moves over, a regular clear replaces a legacy `L` mark, the better score per
+trial and parse per label wins, and the Discord link moves if only the duplicate
+had one. It shows you all of that first, then deletes the duplicate. It refuses
+two records linked to different Discord accounts, and a duplicate that's still
+in a request waiting on you. `/undo` puts every row back exactly as it was.
+
+**Leaving and coming back.** Someone who leaves the server is taken off the
+lists, and put back on when they rejoin, with their roles if `/sync` is on.
+Someone you removed with `/member remove` stays removed.
 
 ---
 
@@ -347,6 +422,13 @@ Three shapes, **not interchangeable**:
 A weekly copy posts itself to `reports_channel` — set the day and hour with
 `report_day` and `report_hour`, or `off` to stop it.
 
+**The bot also backs itself up.** Every day, and right before every `/import`,
+it saves a full copy of the database to `data/backups` next to the database. It
+keeps the newest 14 daily copies and 10 pre-import copies, and `/status` shows
+when the last one was made. To restore one: stop the bot, copy the backup over
+`data/unify.sqlite3`, and start it again. Each copy is the size of the database,
+so allow room for about 24 of them.
+
 ---
 
 ## 10. Logging
@@ -358,6 +440,7 @@ Three channels, split by who reads them. Set them with `/config channel`.
 | `activity_channel` | Routine recordings, **batched into a digest** every `digest_minutes` (default 15) rather than one message each |
 | `audit_channel` | Officer data changes, one per action, each with its `/undo` number |
 | `problems_channel` | Only what needs a human: unrecognised roles, unknown members, failed commands, restarts |
+| `evidence_channel` | The bot's own copy of the screenshot behind every instant recording. Empty means the admin log |
 
 The problems channel should be empty on a good day. It's the only one you have to
 watch.
@@ -370,8 +453,8 @@ no Discord role, how many roster entries aren't linked, and how much changed
 yesterday. If you read one thing a day, read that.
 
 **On Mondays it adds _Who recorded what this week_**: one line per recorder or
-officer with how many achievements they recorded, for how many people, and how
-many were titles. Recorders write without a review, so this is your check on
+officer with how many achievements they recorded, for how many people, how many
+were titles, and how many scores they recorded. Recorders write without a review, so this is your check on
 them. A line gets a ⚠️ when someone recorded at least 10 achievements and 60% or
 more went to the same three people. That isn't proof of anything, but it's worth
 a look with `/audit actor:`.
@@ -395,7 +478,8 @@ that, so exports don't get slower forever. Set it to `0` to keep everything.
 ```
 
 Every admin action writes its own inverse, so `/undo` is a real undo, not a guess.
-Bulk imports are the exception.
+Bulk imports are the exception, which is why one is backed up first. Entries with
+a 📎 link to the screenshot they were recorded from.
 
 Start with `/status`: it names most of these for you.
 
@@ -407,6 +491,9 @@ Start with `/status`: it names most of these for you.
 | "I don't know what @X means yet" | `/map role` on that role, or press the button in the message. The post is read again. |
 | "Not on the roster" for one person | `/member add` them, or `/member link` |
 | Approve says nobody has a role yet | Pick Tank, Healer or DPS from the menu on the card, then Approve |
+| A raid lead's post waited anyway | The card says why: no screenshot, an edited post, their own line, or a new guild best |
+| A claim can't be approved: *matches 2 roster entries* | `/member merge` the two records, then approve it |
+| An officer can't see the officer commands | Server Settings, then Integrations, then Unify: allow their officer role |
 | `/member match` says it can only see itself | **Server Members Intent** is off. Turn it on, restart. |
 | `/sync` skips roles | `/sync check` — the bot's role needs to sit above them |
 | An achievement's name is wrong | `/achievement rename` |
@@ -440,6 +527,7 @@ role lists use `/config roles`, everything else `/config set`.
 | `member_submissions` | `false` | Members may send scores and parses with proof |
 | `activity_channel` | — | Digest of routine recordings |
 | `problems_channel` | — | Only things needing a human |
+| `evidence_channel` | — | Copies of the screenshots behind instant recordings (empty = admin log) |
 | `digest_minutes` | `15` | How often the activity digest posts |
 | `briefing_hour` | `8` | Hour (UTC) of the morning briefing |
 | `audit_days` | `365` | Audit retention, `0` for forever |

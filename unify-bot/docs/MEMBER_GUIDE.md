@@ -53,19 +53,23 @@ dps: @e @f @g @h @i @j @k @l
 2. **Say the role** — `tank`, `healer` or `dps`, typed or pinged. Leave it out and
    the post waits for an officer to pick one.
 3. **Ping the achievement roles**, don't type their names.
-4. **Attach the screenshot.** It's copied onto the card the officer checks.
+4. **Attach the screenshot.** It's copied onto the card the officer checks, and
+   without one nothing records straight away, even from a raid lead.
 
 ### Who records it
 
 | Who posted | What happens |
 | --- | --- |
-| A raid lead or officer, for other people | Recorded straight away ✅ |
+| A raid lead or officer, for other people, with a screenshot | Recorded straight away ✅ |
 | Anyone, for **their own** clear | Waits for an officer ⏳, raid leads included |
+| Anyone, without a screenshot | Waits for an officer ⏳ |
 | Everybody else | Waits for an officer ⏳ |
 
 If your officers have set the bot to review everything, every post waits.
 Nobody can record their own clear. A score never goes down: if someone already
-has a better one for that trial, they keep it.
+has a better one for that trial, they keep it. A score that would be the
+guild's best ever for that trial waits for an officer, so a typo can't top the
+leaderboard.
 
 The bot answers once, with what happened to everyone in the post:
 
@@ -79,7 +83,8 @@ The bot answers once, with what happened to everyone in the post:
 | ❓ I don't know what @Some Role means yet | An officer teaches it, and your post is read again |
 
 Made a mistake? **Edit the post** and the bot reads it again. An edit can add
-people, but it can't take back anything that's already been recorded.
+people, but anyone it adds waits for an officer, and it can't take back anything
+that's already been recorded.
 
 You'll get a DM when something lands on your record. Officers can turn that off
 server-wide, but you can also just mute the bot.
@@ -94,7 +99,8 @@ Tap **Claim my gamertag** on your welcome card, or type:
 /register  gamertag: YourName.  proof: <screenshot>
 ```
 
-Either way you send a **screenshot of your gamertag in game**. This only *asks*
+Type it with or without the dot at the end; the bot finds your record either
+way. Either way you send a **screenshot of your gamertag in game**. This only *asks*
 an officer to link your gamertag to your Discord account. Nothing is linked until
 an officer has looked at the screenshot and approved it, and if the gamertag
 already has a record they check it carefully before handing it over.
@@ -106,6 +112,8 @@ already has a record they check it carefully before handing it over.
 Your card, plus anything of yours still waiting on an officer: a claim, a score,
 or a run you were in. Before you're linked it tells you where you stand instead.
 The waiting list is only shown to you.
+
+Leave the server and come back later? Your record comes back with you.
 
 ### Sending in a score or a parse
 
@@ -182,9 +190,17 @@ could be rather than guessing.
 | --- | --- |
 | `/profile` | Their achievement card, with the same menus |
 | 🏆 **Scores & parses** on the card | Their trial scores with the total, and their parses, best first |
+| 🚩 **Report a mistake** on the card | Tell the officers something on this record is wrong |
 | `/roster` | Everybody in the guild, paginated |
 
 `/roster search: bud` filters the list.
+
+### Something on a record is wrong?
+
+Tap 🚩 **Report a mistake** on the card and say what's wrong, like *"They
+weren't in Friday's vSS HM run"*. An officer looks at it. Nothing changes unless
+they decide it should, and the person isn't told they were reported. You can
+have three reports waiting at a time.
 
 ---
 
@@ -282,5 +298,6 @@ It never runs the old command. It only shows you the new one to send.
 | See everyone | `/roster` |
 | Get on the roster | **Claim my gamertag** on your welcome card, or `/register` |
 | Check my link and what's pending | `/me` |
+| Report something wrong on a record | 🚩 **Report a mistake** on the profile card |
 | Send in a score or parse | `/submit score` · `/submit parse` |
 | Work out what else it does | `/help` |

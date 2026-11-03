@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -218,10 +219,36 @@ class Database:
             return cur
 
     async def run_many(self, statements: Iterable[tuple[str, Sequence[Any]]]) -> None:
+        """All or nothing: a failure part-way through leaves no half-done change
+        behind for the next write to commit."""
         async with self._writing:
-            for sql, args in statements:
-                await self.conn.execute(sql, args)
+            try:
+                for sql, args in statements:
+                    await self.conn.execute(sql, args)
+            except Exception:
+                await self.conn.rollback()
+                raise
             await self.conn.commit()
+
+    # --- backups ------------------------------------------------------------
+    @property
+    def backup_folder(self) -> Path:
+        return self.path.parent / "backups"
+
+    async def backup(self, label: str, keep: int) -> Path:
+        """A full copy of the database in data/backups, consistent even while the bot
+        is running. Only the newest `keep` copies with this label are kept.
+
+        Restoring is: stop the bot, copy one over data/unify.sqlite3, start it."""
+        folder = self.backup_folder
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S-%f")   # sorts by time
+        target = folder / f"{label}-{stamp}.sqlite3"
+        async with self._writing:          # never mid-way through somebody's change
+            await self.conn.execute("VACUUM INTO ?", (str(target),))
+        for old in sorted(folder.glob(f"{label}-*.sqlite3"))[:-keep]:
+            old.unlink()
+        return target
 
     # --- settings -----------------------------------------------------------
     async def get_setting(self, key: str, default: Any = None) -> Any:

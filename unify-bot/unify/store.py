@@ -399,6 +399,129 @@ async def set_parse(db, member: Member, label: str, dps: int, actor_id, actor_na
                      f"{member.gamertag} {label} = {dps:,}", undo=undo, evidence=evidence)
 
 
+# --------------------------------------------------------------------------- merging
+@dataclass
+class Merge:
+    """Everything folding one record into another would do, worked out first so an
+    officer sees it before it happens, with the exact steps to put it all back."""
+    duplicate: Member
+    keep: Member
+    clears: int = 0          # clears that move over
+    already: int = 0         # clears the kept record already had
+    upgraded: int = 0        # legacy marks on the kept record a regular clear replaces
+    scores: int = 0          # scores that were better on the duplicate
+    parses: int = 0          # parses that were better on the duplicate
+    link: bool = False       # the duplicate's Discord link moves over
+    problem: str = ""        # why it can't be done
+    statements: list = field(default_factory=list)
+    undo: list = field(default_factory=list)
+
+
+def _insert(table: str, row, **override) -> tuple[str, list]:
+    columns = list(row.keys())
+    return (f"INSERT INTO {table}({', '.join(columns)}) VALUES({', '.join('?' * len(columns))})",
+            [override.get(c, row[c]) for c in columns])
+
+
+async def plan_merge(db: Database, duplicate: Member, keep: Member) -> Merge:
+    """Fold `duplicate` into `keep`: every clear (a regular clear beats a legacy
+    mark), the better score per trial and parse per label, and the Discord link if
+    only the duplicate has one. Then the duplicate is deleted."""
+    plan = Merge(duplicate, keep)
+    if duplicate.id == keep.id:
+        plan.problem = "that's the same record twice"
+        return plan
+    if duplicate.discord_id and keep.discord_id and duplicate.discord_id != keep.discord_id:
+        plan.problem = (f"**{duplicate.gamertag}** and **{keep.gamertag}** are linked to two "
+                        "different Discord accounts, so they may be two people. Unlink one "
+                        "with `/member link` first if they really are the same person.")
+        return plan
+
+    dup_row = await db.one("SELECT * FROM members WHERE id = ?", (duplicate.id,))
+    keep_row = await db.one("SELECT * FROM members WHERE id = ?", (keep.id,))
+    moves, keep_rows_undo, restore = [], [], [_insert("members", dup_row)]
+
+    have = {(r["role"], r["achievement_key"]): r["mark"] for r in await db.all(
+        "SELECT role, achievement_key, mark FROM member_achievements WHERE member_id = ?",
+        (keep.id,))}
+    for r in await db.all("SELECT * FROM member_achievements WHERE member_id = ?",
+                          (duplicate.id,)):
+        where = (keep.id, r["role"], r["achievement_key"])
+        mark = have.get((r["role"], r["achievement_key"]))
+        if mark is None:
+            moves.append(_insert("member_achievements", r, member_id=keep.id))
+            keep_rows_undo.append(("DELETE FROM member_achievements WHERE member_id = ? "
+                                   "AND role = ? AND achievement_key = ?", where))
+            plan.clears += 1
+        elif mark == "L" and r["mark"] == "X":
+            moves.append(("UPDATE member_achievements SET mark = 'X' WHERE member_id = ? "
+                          "AND role = ? AND achievement_key = ?", where))
+            keep_rows_undo.append(("UPDATE member_achievements SET mark = 'L' WHERE "
+                                   "member_id = ? AND role = ? AND achievement_key = ?", where))
+            plan.upgraded += 1
+        else:
+            plan.already += 1
+        restore.append(_insert("member_achievements", r))
+
+    better = {}
+    for table, key, value in (("scores", "trial_key", "score"), ("parses", "label", "dps")):
+        mine = {r[key]: r for r in await db.all(f"SELECT * FROM {table} WHERE member_id = ?",
+                                                (keep.id,))}
+        better[table] = 0
+        for r in await db.all(f"SELECT * FROM {table} WHERE member_id = ?", (duplicate.id,)):
+            restore.append(_insert(table, r))
+            old = mine.get(r[key])
+            if old is None:
+                moves.append(_insert(table, r, member_id=keep.id))
+                keep_rows_undo.append((f"DELETE FROM {table} WHERE member_id = ? AND {key} = ?",
+                                       (keep.id, r[key])))
+                better[table] += 1
+            elif r[value] > old[value]:
+                moves.append((f"UPDATE {table} SET {value} = ?, recorded_at = ?, recorded_by = ? "
+                              f"WHERE member_id = ? AND {key} = ?",
+                              (r[value], r["recorded_at"], r["recorded_by"], keep.id, r[key])))
+                keep_rows_undo.append((f"UPDATE {table} SET {value} = ?, recorded_at = ?, "
+                                       f"recorded_by = ? WHERE member_id = ? AND {key} = ?",
+                                       (old[value], old["recorded_at"], old["recorded_by"],
+                                        keep.id, r[key])))
+                better[table] += 1
+    plan.scores, plan.parses = better["scores"], better["parses"]
+
+    # Decided requests are history: they follow the person rather than vanish.
+    history = [r[0] for r in await db.all("SELECT id FROM requests WHERE member_id = ?",
+                                          (duplicate.id,))]
+    moves += [("UPDATE requests SET member_id = ? WHERE id = ?", (keep.id, i)) for i in history]
+    requests_back = [("UPDATE requests SET member_id = ? WHERE id = ?", (duplicate.id, i))
+                     for i in history]
+
+    keep_member_undo = []
+    after = [("DELETE FROM members WHERE id = ?", (duplicate.id,))]
+    if duplicate.discord_id and not keep.discord_id:
+        plan.link = True
+        after.append(("UPDATE members SET discord_id = ? WHERE id = ?", (duplicate.discord_id, keep.id)))
+        keep_member_undo.append(("UPDATE members SET discord_id = NULL WHERE id = ?", (keep.id,)))
+    if dup_row["legacy_name"] and not keep_row["legacy_name"]:
+        after.append(("UPDATE members SET legacy_name = ? WHERE id = ?",
+                      (dup_row["legacy_name"], keep.id)))
+        keep_member_undo.append(("UPDATE members SET legacy_name = '' WHERE id = ?", (keep.id,)))
+    if dup_row["active"] and not keep_row["active"]:
+        after.append(("UPDATE members SET active = 1, left_server = 0 WHERE id = ?", (keep.id,)))
+        keep_member_undo.append(("UPDATE members SET active = ?, left_server = ? WHERE id = ?",
+                                 (keep_row["active"], keep_row["left_server"], keep.id)))
+
+    plan.statements = moves + after
+    # Undone in the reverse order: free the Discord link before the duplicate is
+    # recreated with its own id, so older audit entries pointing at it still work.
+    plan.undo = keep_member_undo + restore + requests_back + keep_rows_undo
+    return plan
+
+
+async def apply_merge(db: Database, plan: Merge, actor_id: int, actor_name: str) -> int:
+    await db.run_many(plan.statements)
+    return await log_action(db, actor_id, actor_name, "member merge",
+                            f"{plan.duplicate.gamertag} into {plan.keep.gamertag}", undo=plan.undo)
+
+
 # --------------------------------------------------------------------------- audit
 async def log_action(db: Database, actor_id: int, actor_name: str, action: str,
                      summary: str, undo: list[tuple[str, Sequence[Any]]] | None = None,

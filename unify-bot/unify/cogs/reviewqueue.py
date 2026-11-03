@@ -102,6 +102,10 @@ async def describe(bot, row) -> str:
         return f"**{who}** · {payload.get('trial', '?')} = {int(payload.get('score', 0)):,}"
     if kind == "parse":
         return f"**{who}** · {payload.get('label', '?')} = {int(payload.get('dps', 0)):,}"
+    if kind == "report":
+        text = payload.get("text", "")
+        return (f"**{who}** · {payload.get('context', '')} · “{text[:80]}"
+                + ("…”" if len(text) > 80 else "”"))
     if kind == "check":
         people = len(payload.get("recorded", []))
         bits = [f"<@{row['requester_id']}> recorded **{people}** "
@@ -125,6 +129,14 @@ async def card(bot, row, image: str | None = None) -> discord.Embed:
         f"{reviews.KIND_LABEL.get(row['kind'], row['kind'])} — waiting for an officer",
         await describe(bot, row),
     )
+
+    if row["kind"] == "report":
+        e.add_field(name="What they said", value=payload.get("text") or "—", inline=False)
+        e.add_field(name="What the buttons do",
+                    value="**Approve** once you've dealt with it, **Reject** if nothing's "
+                          "wrong. Neither changes the record: fix it with `/achievement "
+                          "take`, or find the change in `/audit member:` and `/undo` it.",
+                    inline=False)
 
     if row["kind"] == "check":
         lines = []

@@ -64,6 +64,7 @@ class UnifyBot(commands.Bot):
 
         self.tree.on_error = self.on_tree_error
         self.restrict_to_guilds()
+        self.hide_officer_commands()
 
         if self.env.guild_id:
             guild = discord.Object(id=self.env.guild_id)
@@ -85,6 +86,20 @@ class UnifyBot(commands.Bot):
             guild=True, dm_channel=False, private_channel=False)
         for command in self.tree.get_commands():
             command.allowed_contexts = guild_only
+
+    def hide_officer_commands(self) -> None:
+        """Members only see commands they can use. Discord hides a top-level command
+        from anyone without Manage Server, so this applies where every subcommand is
+        officer-only; /guide mixes both and stays visible. The officer check still
+        runs on every use. A server owner can show them to an officer role under
+        Server Settings > Integrations."""
+        officer = discord.Permissions(manage_guild=True)
+        for command in self.tree.get_commands():
+            leaves = command.commands if isinstance(command, app_commands.Group) else [command]
+            if leaves and all(any(getattr(check, "officer_only", False)
+                                  for check in getattr(leaf, "checks", []))
+                              for leaf in leaves):
+                command.default_permissions = officer
 
     async def close(self) -> None:
         await self.db.close()

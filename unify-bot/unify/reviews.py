@@ -12,7 +12,7 @@ from typing import Any, Sequence
 from . import store
 from .db import Database
 
-KINDS = ("run", "achievements", "register", "score", "parse", "check")
+KINDS = ("run", "achievements", "register", "score", "parse", "check", "report")
 KIND_LABEL = {
     "run": "Run",
     "achievements": "Achievements",
@@ -20,9 +20,10 @@ KIND_LABEL = {
     "score": "Trial score",
     "parse": "Parse",
     "check": "Spot check",
+    "report": "Record report",
 }
 KIND_EMOJI = {"run": "⚔️", "achievements": "🏅", "register": "👤", "score": "🏆", "parse": "📈",
-              "check": "🔍"}
+              "check": "🔍", "report": "🚩"}
 ROLES_FOR_CLEARS = ("tank", "healer", "dps")
 
 
@@ -209,6 +210,8 @@ async def apply(db: Database, row, actor_id: int, actor_name: str,
         return await _apply_run(db, payload, actor_id, actor_name, evidence)
     if kind == "check":
         return Applied(True, "checked, and it looks right")
+    if kind == "report":
+        return Applied(True, "marked as dealt with")
 
     member = await store.get_member(db, row["member_id"]) if row["member_id"] else None
     if member is None:
@@ -372,6 +375,18 @@ async def _apply_register(db: Database, row, payload: dict,
         undo=[("UPDATE members SET discord_id = NULL WHERE id = ?", (member.id,))],
         evidence=evidence)
     return Applied(True, summary, member)
+
+
+async def pending_about(db: Database, member_id: int) -> list[int]:
+    """Requests still waiting that would touch this member when decided."""
+    ids = []
+    for r in await db.all("SELECT id, member_id, payload FROM requests WHERE status = 'pending'"):
+        payload = json.loads(r["payload"] or "{}")
+        named = {entry[0] for entry in payload.get("members", []) + payload.get("recorded", [])}
+        named |= set(payload.get("score_members", [])) | set(payload.get("score_raised", []))
+        if r["member_id"] == member_id or member_id in named:
+            ids.append(r["id"])
+    return ids
 
 
 async def claim_target(db: Database, gamertag: str):
